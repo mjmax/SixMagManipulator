@@ -1,0 +1,4 @@
+# Versions compatible with the Python 3.8 runtime used during development.
+numpy==1.24.4
+opencv-python==4.10.0.84
+
