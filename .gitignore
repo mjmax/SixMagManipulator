@@ -1,0 +1,8 @@
+utilities/
+.codex/
+aqtinstall.log
+scr/_gui/build/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
