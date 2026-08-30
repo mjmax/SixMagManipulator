@@ -19,6 +19,7 @@
 
 namespace {
 constexpr double pi = 3.14159265358979323846;
+constexpr int traceOverlaySize = 512;
 
 QPointF unitVector(double angleRadians)
 {
@@ -42,6 +43,10 @@ ManipulatorView::ManipulatorView(QWidget *parent)
     setObjectName("manipulatorView");
     setMinimumSize(620, 580);
     setAttribute(Qt::WA_OpaquePaintEvent);
+
+    m_traceOverlay = QImage(traceOverlaySize, traceOverlaySize,
+                            QImage::Format_ARGB32_Premultiplied);
+    m_traceOverlay.fill(Qt::transparent);
 
     m_clearTraceButton = new QPushButton(QStringLiteral("Clear\nTrace"), this);
     m_clearTraceButton->setObjectName("workspaceClearTraceButton");
@@ -161,9 +166,17 @@ void ManipulatorView::setVisualizationRate(int framesPerSecond)
 
 void ManipulatorView::setTraceColor(const QColor &color)
 {
-    if (!color.isValid())
+    if (!color.isValid() || color == m_traceColor)
         return;
     m_traceColor = color;
+
+    // Recolor the existing alpha mask without retaining historical points.
+    // This operation occurs only when the user changes the trace color.
+    if (!m_traceOverlay.isNull()) {
+        QPainter overlayPainter(&m_traceOverlay);
+        overlayPainter.setCompositionMode(QPainter::CompositionMode_SourceIn);
+        overlayPainter.fillRect(m_traceOverlay.rect(), m_traceColor);
+    }
     update();
 }
 
@@ -175,19 +188,23 @@ void ManipulatorView::setTraceWidth(double pixels)
     update();
 }
 
+void ManipulatorView::setMaximumTraceDots(int maximumDots)
+{
+    m_maximumTraceDots = std::clamp(maximumDots, 0, 64);
+}
+
 void ManipulatorView::setTraceEnabled(bool enabled)
 {
     if (m_traceEnabled == enabled)
         return;
     m_traceEnabled = enabled;
-    // Never join two separately recorded intervals with a straight line.
-    m_startNewTraceSegment = true;
+    m_hasPreviousTracePosition = false;
 }
 
 void ManipulatorView::clearTrace()
 {
-    m_traceSegments.clear();
-    m_startNewTraceSegment = true;
+    m_traceOverlay.fill(Qt::transparent);
+    m_hasPreviousTracePosition = false;
     update();
 }
 
@@ -232,7 +249,7 @@ void ManipulatorView::receiveTrackingVisualization(const TrackingResult &result)
 {
     if (result.objects.isEmpty()) {
         m_objectDetected = false;
-        m_startNewTraceSegment = true;
+        m_hasPreviousTracePosition = false;
         emit trackingStatusChanged(
             false, {}, result.detectionMilliseconds,
             result.processingFramesPerSecond);
@@ -245,33 +262,75 @@ void ManipulatorView::receiveTrackingVisualization(const TrackingResult &result)
     m_objectPosition = object.normalizedPosition;
     m_objectRadius = object.normalizedRadius;
     if (m_traceEnabled)
-        appendTracePoint(m_objectPosition);
+        appendTraceDot(m_objectPosition);
     emit trackingStatusChanged(
         true, m_objectPosition, result.detectionMilliseconds,
         result.processingFramesPerSecond);
     update();
 }
 
-void ManipulatorView::appendTracePoint(const QPointF &normalizedPosition)
+void ManipulatorView::appendTraceDot(const QPointF &normalizedPosition)
 {
-    if (m_startNewTraceSegment || m_traceSegments.isEmpty()) {
-        m_traceSegments.push_back({});
-        m_startNewTraceSegment = false;
+    if (m_traceOverlay.isNull())
+        return;
+
+    const QPointF overlayPoint(
+        std::clamp(normalizedPosition.x(), 0.0, 1.0)
+            * (m_traceOverlay.width() - 1),
+        std::clamp(normalizedPosition.y(), 0.0, 1.0)
+            * (m_traceOverlay.height() - 1));
+
+    // Trace width is specified in visible GUI pixels. Convert it to overlay
+    // pixels so dots retain the selected size when the overlay is composited.
+    const QRectF content = rect().adjusted(18, 18, -18, -18);
+    const double designSize = std::min(
+        std::min(content.width(), content.height()), 680.0);
+    const double visibleWorkspaceDiameter = std::max(1.0, designSize * 0.57);
+    const double overlayDiameter = std::max(
+        1.0, m_traceWidth * m_traceOverlay.width()
+            / visibleWorkspaceDiameter);
+
+    int steps = 1;
+    QPointF previousOverlayPoint;
+    if (m_hasPreviousTracePosition) {
+        previousOverlayPoint = QPointF(
+            std::clamp(m_previousTracePosition.x(), 0.0, 1.0)
+                * (m_traceOverlay.width() - 1),
+            std::clamp(m_previousTracePosition.y(), 0.0, 1.0)
+                * (m_traceOverlay.height() - 1));
+
+        const double refreshScale = std::clamp(
+            static_cast<double>(m_visualizationRateHz) / 30.0,
+            0.5, 2.0);
+        const double targetSpacing = std::max(
+            1.0, overlayDiameter * refreshScale);
+        const QPointF delta = overlayPoint - previousOverlayPoint;
+        const double distance = std::hypot(delta.x(), delta.y());
+
+        // The user-selected cap bounds the number of estimated dots. A value
+        // of zero leaves only the newly measured position.
+        steps = std::clamp(
+            static_cast<int>(std::ceil(distance / targetSpacing)),
+            1, m_maximumTraceDots + 1);
     }
 
-    QVector<QPointF> &segment = m_traceSegments.last();
-    if (!segment.isEmpty()) {
-        const QPointF delta = normalizedPosition - segment.last();
-        if (delta.x() * delta.x() + delta.y() * delta.y() < 1.0e-7)
-            return;
+    QPainter overlayPainter(&m_traceOverlay);
+    overlayPainter.setRenderHint(QPainter::Antialiasing, true);
+    overlayPainter.setPen(Qt::NoPen);
+    overlayPainter.setBrush(m_traceColor);
+    for (int step = 1; step <= steps; ++step) {
+        const double fraction = static_cast<double>(step) / steps;
+        const QPointF dotPosition = m_hasPreviousTracePosition
+            ? previousOverlayPoint
+                + (overlayPoint - previousOverlayPoint) * fraction
+            : overlayPoint;
+        overlayPainter.drawEllipse(dotPosition,
+                                   overlayDiameter * 0.5,
+                                   overlayDiameter * 0.5);
     }
-    segment.push_back(normalizedPosition);
 
-    // Bound visualization memory while retaining several minutes of motion.
-    if (segment.size() > 20000)
-        segment.remove(0, 5000);
-    while (m_traceSegments.size() > 128)
-        m_traceSegments.removeFirst();
+    m_previousTracePosition = normalizedPosition;
+    m_hasPreviousTracePosition = true;
 }
 
 void ManipulatorView::paintEvent(QPaintEvent *event)
@@ -393,24 +452,8 @@ void ManipulatorView::drawWorkspace(QPainter &painter,
         painter.fillRect(circle, glass);
     }
 
-    painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.setBrush(Qt::NoBrush);
-    painter.setPen(QPen(m_traceColor, m_traceWidth,
-                        Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-    for (const QVector<QPointF> &segment : m_traceSegments) {
-        if (segment.isEmpty())
-            continue;
-        QPainterPath trace;
-        const auto mapPoint = [&circle](const QPointF &point) {
-            return QPointF(
-                circle.left() + point.x() * circle.width(),
-                circle.top() + point.y() * circle.height());
-        };
-        trace.moveTo(mapPoint(segment.first()));
-        for (int index = 1; index < segment.size(); ++index)
-            trace.lineTo(mapPoint(segment[index]));
-        painter.drawPath(trace);
-    }
+    if (!m_traceOverlay.isNull())
+        painter.drawImage(circle, m_traceOverlay);
 
     if (m_objectDetected) {
         const QPointF marker(

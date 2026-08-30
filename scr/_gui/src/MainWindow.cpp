@@ -302,6 +302,12 @@ MainWindow::MainWindow(QWidget *parent)
     traceWidth->setValue(2.5);
     traceWidth->setSuffix(" px");
 
+    auto *maximumTraceDots = new QSpinBox;
+    maximumTraceDots->setRange(0, 64);
+    maximumTraceDots->setValue(16);
+    maximumTraceDots->setToolTip(
+        "Maximum estimated dots inserted between measured positions; 0 disables interpolation");
+
     auto *traceToggle = new QPushButton("Trace On");
     traceToggle->setObjectName("traceToggleButton");
     traceToggle->setCheckable(true);
@@ -314,7 +320,8 @@ MainWindow::MainWindow(QWidget *parent)
         maximumArea,
         minimumCircularity,
         visualizationRate,
-        traceWidth
+        traceWidth,
+        maximumTraceDots
     };
     for (QWidget *spinBox : spinBoxes)
         new SpinArrowOverlay(spinBox);
@@ -329,6 +336,7 @@ MainWindow::MainWindow(QWidget *parent)
     visualizationRate->setFixedWidth(processingFieldWidth);
     traceColor->setFixedWidth(processingFieldWidth);
     traceWidth->setFixedWidth(processingFieldWidth);
+    maximumTraceDots->setFixedWidth(processingFieldWidth);
     traceToggle->setFixedSize(processingFieldWidth, 28);
 
     const auto addProcessingControl =
@@ -346,6 +354,7 @@ MainWindow::MainWindow(QWidget *parent)
     addProcessingControl(2, 1, makeFieldLabel("Trace color"), traceColor);
     addProcessingControl(3, 0, makeFieldLabel("Trace line width"), traceWidth);
     form->addWidget(traceToggle, 7, 1, Qt::AlignLeft | Qt::AlignTop);
+    addProcessingControl(4, 0, makeFieldLabel("Max Trace Dots"), maximumTraceDots);
     form->setColumnStretch(2, 1);
     imageLayout->addLayout(form);
 
@@ -390,6 +399,8 @@ MainWindow::MainWindow(QWidget *parent)
     });
     connect(traceWidth, qOverload<double>(&QDoubleSpinBox::valueChanged),
             m_manipulatorView, &ManipulatorView::setTraceWidth);
+    connect(maximumTraceDots, qOverload<int>(&QSpinBox::valueChanged),
+            m_manipulatorView, &ManipulatorView::setMaximumTraceDots);
 
     connect(m_manipulatorView, &ManipulatorView::trackingStatusChanged,
             this,

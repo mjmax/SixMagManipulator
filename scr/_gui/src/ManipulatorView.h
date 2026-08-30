@@ -7,7 +7,6 @@
 #include <QImage>
 #include <QMediaCaptureSession>
 #include <QPointF>
-#include <QVector>
 #include <QVideoSink>
 #include <QWidget>
 
@@ -46,6 +45,7 @@ public slots:
     void setVisualizationRate(int framesPerSecond);
     void setTraceColor(const QColor &color);
     void setTraceWidth(double pixels);
+    void setMaximumTraceDots(int maximumDots);
     void setTraceEnabled(bool enabled);
     void clearTrace();
 
@@ -68,7 +68,7 @@ private slots:
 private:
     void startDefaultCamera();
     void applyImageProcessingSettings(const ImageProcessingSettings &settings);
-    void appendTracePoint(const QPointF &normalizedPosition);
+    void appendTraceDot(const QPointF &normalizedPosition);
     void drawManipulator(QPainter &painter, const QRectF &area);
     void drawWorkspace(QPainter &painter, const QPointF &center, double radius);
     void drawMagnet(
@@ -92,10 +92,12 @@ private:
     QElapsedTimer m_displayFrameClock;
     int m_visualizationRateHz = 15;
 
-    QVector<QVector<QPointF>> m_traceSegments;
-    bool m_startNewTraceSegment = true;
+    QImage m_traceOverlay;
+    QPointF m_previousTracePosition;
+    bool m_hasPreviousTracePosition = false;
     QColor m_traceColor = QColor("#ff4b55");
     double m_traceWidth = 2.5;
+    int m_maximumTraceDots = 16;
     bool m_traceEnabled = false;
     bool m_objectDetected = false;
     QPointF m_objectPosition;
