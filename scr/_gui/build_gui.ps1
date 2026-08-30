@@ -1,54 +1,88 @@
+Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$ProjectRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+# Resolve everything relative to this script so it works from any PowerShell
+# directory and after the repository is moved to another drive or folder.
+$GuiDirectory = [System.IO.Path]::GetFullPath($PSScriptRoot)
+$ProjectRoot = [System.IO.Path]::GetFullPath(
+    (Join-Path $GuiDirectory "..\..")
+)
 $QtRoot = Join-Path $ProjectRoot "utilities\Qt"
 $QtPrefix = Join-Path $QtRoot "6.8.3\mingw_64"
 $CompilerBin = Join-Path $QtRoot "Tools\mingw1310_64\bin"
 $CMake = Join-Path $QtRoot "Tools\CMake_64\bin\cmake.exe"
 $Ninja = Join-Path $QtRoot "Tools\Ninja\ninja.exe"
-$BuildDirectory = Join-Path $PSScriptRoot "build"
+$CxxCompiler = Join-Path $CompilerBin "g++.exe"
+$DeployQt = Join-Path $QtPrefix "bin\windeployqt.exe"
+$QtConfig = Join-Path $QtPrefix "lib\cmake\Qt6\Qt6Config.cmake"
+$BuildDirectory = Join-Path $GuiDirectory "build"
+$Executable = Join-Path $BuildDirectory "SixMagManipulatorGui.exe"
 
-$RequiredPaths = @(
-    $CMake,
-    $Ninja,
-    (Join-Path $CompilerBin "gcc.exe"),
-    (Join-Path $CompilerBin "g++.exe"),
-    (Join-Path $QtPrefix "bin\windeployqt.exe")
-)
+$RequiredPaths = [ordered]@{
+    "CMake" = $CMake
+    "Ninja" = $Ninja
+    "MinGW C++ compiler" = $CxxCompiler
+    "Qt deployment tool" = $DeployQt
+    "Qt 6 package configuration" = $QtConfig
+}
 
-foreach ($RequiredPath in $RequiredPaths) {
-    if (-not (Test-Path -LiteralPath $RequiredPath)) {
-        throw "Required Qt build component is missing: $RequiredPath"
+foreach ($Component in $RequiredPaths.GetEnumerator()) {
+    if (-not (Test-Path -LiteralPath $Component.Value -PathType Leaf)) {
+        throw "$($Component.Key) is missing at '$($Component.Value)'. Recreate the utilities folder using the instructions in README.md."
     }
 }
 
-& $CMake `
-    -S $PSScriptRoot `
-    -B $BuildDirectory `
-    -G Ninja `
-    -DCMAKE_BUILD_TYPE=Release `
-    "-DCMAKE_MAKE_PROGRAM=$Ninja" `
-    "-DCMAKE_PREFIX_PATH=$QtPrefix" `
-    "-DCMAKE_C_COMPILER=$(Join-Path $CompilerBin 'gcc.exe')" `
-    "-DCMAKE_CXX_COMPILER=$(Join-Path $CompilerBin 'g++.exe')"
-if ($LASTEXITCODE -ne 0) {
-    throw "CMake configuration failed."
+# Windows locks a running executable. The process name is unique to this GUI,
+# so close existing instances even if the same folder is reached through a
+# different drive alias (for example W: instead of its physical D: path).
+$RunningInstances = @(Get-Process -Name "SixMagManipulatorGui" -ErrorAction SilentlyContinue)
+if ($RunningInstances.Count -gt 0) {
+    Write-Host "Closing the running GUI before rebuilding..."
+    $RunningInstances | Stop-Process -Force
+    $RunningInstances | Wait-Process -Timeout 10 -ErrorAction SilentlyContinue
 }
 
-& $CMake --build $BuildDirectory
+New-Item -ItemType Directory -Path $BuildDirectory -Force | Out-Null
+
+# --fresh discards only CMake's generated cache. This prevents cached absolute
+# paths from breaking the build when the repository moves (for example W: to D:).
+$ConfigureArguments = @(
+    "--fresh"
+    "-S", $GuiDirectory
+    "-B", $BuildDirectory
+    "-G", "Ninja"
+    "-DCMAKE_BUILD_TYPE=Release"
+    "-DCMAKE_MAKE_PROGRAM=$Ninja"
+    "-DCMAKE_PREFIX_PATH=$QtPrefix"
+    "-DQt6_DIR=$(Split-Path -Parent $QtConfig)"
+    "-DCMAKE_CXX_COMPILER=$CxxCompiler"
+)
+
+Write-Host "Configuring the GUI..."
+& $CMake @ConfigureArguments
 if ($LASTEXITCODE -ne 0) {
-    throw "GUI compilation failed."
+    throw "CMake configuration failed with exit code $LASTEXITCODE."
 }
 
-$Executable = Join-Path $BuildDirectory "SixMagManipulatorGui.exe"
-& (Join-Path $QtPrefix "bin\windeployqt.exe") `
+Write-Host "Building the GUI..."
+& $CMake --build $BuildDirectory --parallel
+if ($LASTEXITCODE -ne 0) {
+    throw "GUI compilation failed with exit code $LASTEXITCODE."
+}
+
+if (-not (Test-Path -LiteralPath $Executable -PathType Leaf)) {
+    throw "The build completed without producing '$Executable'."
+}
+
+Write-Host "Preparing the Qt runtime..."
+& $DeployQt `
     --release `
     --no-translations `
     --compiler-runtime `
     $Executable
 if ($LASTEXITCODE -ne 0) {
-    throw "Qt runtime deployment failed."
+    throw "Qt runtime deployment failed with exit code $LASTEXITCODE."
 }
 
-Write-Host "GUI build ready: $Executable"
+Write-Host "GUI build ready: $Executable" -ForegroundColor Green
 

@@ -1,9 +1,46 @@
+param(
+    [switch]$Rebuild
+)
+
+Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$Executable = Join-Path $PSScriptRoot "build\SixMagManipulatorGui.exe"
-if (-not (Test-Path -LiteralPath $Executable)) {
-    throw "The GUI has not been built. Run .\scr\_gui\build_gui.ps1 first."
+$GuiDirectory = [System.IO.Path]::GetFullPath($PSScriptRoot)
+$BuildDirectory = Join-Path $GuiDirectory "build"
+$Executable = Join-Path $BuildDirectory "SixMagManipulatorGui.exe"
+$BuildScript = Join-Path $GuiDirectory "build_gui.ps1"
+
+$NeedsBuild = $Rebuild -or -not (Test-Path -LiteralPath $Executable -PathType Leaf)
+
+if (-not $NeedsBuild) {
+    $ExecutableTime = (Get-Item -LiteralPath $Executable).LastWriteTimeUtc
+    $BuildInputs = @(
+        (Join-Path $GuiDirectory "CMakeLists.txt")
+    )
+    $BuildInputs += Get-ChildItem -LiteralPath (Join-Path $GuiDirectory "src") -File -Recurse |
+        Select-Object -ExpandProperty FullName
+
+    $NeedsBuild = $null -ne ($BuildInputs | Where-Object {
+        (Get-Item -LiteralPath $_).LastWriteTimeUtc -gt $ExecutableTime
+    } | Select-Object -First 1)
 }
 
-& $Executable
+if ($NeedsBuild) {
+    Write-Host "The GUI is missing or out of date. Building it now..."
+    & $BuildScript
+}
+
+if (-not (Test-Path -LiteralPath $Executable -PathType Leaf)) {
+    throw "The GUI executable was not created at '$Executable'."
+}
+
+# Use the build folder as the working directory so Qt can always locate its
+# deployed plugins and multimedia libraries. Start-Process returns the prompt
+# immediately while keeping the GUI running in its own process.
+$Process = Start-Process `
+    -FilePath $Executable `
+    -WorkingDirectory $BuildDirectory `
+    -PassThru
+
+Write-Host "GUI started (process ID $($Process.Id))." -ForegroundColor Green
 
