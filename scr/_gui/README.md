@@ -1,31 +1,58 @@
 # Qt 6 GUI — Manipulator View
 
-This module contains the C++/Qt 6 desktop GUI. The first view provides:
+This module contains the C++/Qt 6 desktop GUI. It provides:
 
-- a circular, center-cropped live camera viewport;
-- six top-view magnet dials positioned around the workspace;
-- metallic red north halves and blue south halves;
-- zero-angle north-pole orientation toward the workspace center;
-- positive counterclockwise magnet rotation;
-- `setMagnetAngle(index, degrees)` slots for future servo feedback.
+- a circular, center-cropped live camera workspace;
+- six top-view magnet dials and servo-limit visualization;
+- low-rate object and trace rendering that does not throttle detection;
+- an **Image Processing** control tab;
+- detector status and a **Clear trace path** button.
 
-Magnet indices start at zero in the C++ interface. The initial angles are all
-zero until live servo data is connected. The visible dial numbers are one-based
-servo identifiers, arranged counterclockwise from the right-hand magnet.
+## Integrated image processing
+
+The native real-time tracker is kept in `scr/_imgproc/ImageTracker.h` and
+`scr/_imgproc/ImageTracker.cpp`. It implements the same dark, approximately
+circular object logic as the Python prototype without starting a Python process
+or copying frames between applications.
+
+The tracker runs on a high-priority worker thread and retains only the newest
+unprocessed camera frame. Detection uses every available frame, while camera,
+marker, status, and trace drawing default to 15 Hz. Detection is restricted to
+the centered circular region that is actually visible in the workspace.
+
+`ImageTracker::latestResult()` provides a thread-safe latest position for the
+future control loop. `fastResultReady` is emitted after every processed frame;
+`visualizationResultReady` is rate-limited for the GUI. Results are represented
+as a collection and the detector can return up to two objects, although the
+current application deliberately requests one object.
+
+## Image Processing controls
+
+- Dark-pixel threshold
+- Minimum and maximum object area
+- Minimum circularity
+- GUI-only refresh rate
+- Trace color palette
+- Typed or arrow-adjustable trace line width
 
 ## Build and run
 
 Qt 6.8.3, Qt Multimedia, CMake, Ninja, and the matching MinGW compiler are
-installed locally under `utilities/Qt`.
-
-From the workspace root:
+expected under `utilities/Qt`. From any PowerShell directory, use the scripts by
+their appropriate relative or absolute paths. From the repository root:
 
 ```powershell
 .\scr\_gui\build_gui.ps1
 .\scr\_gui\run_gui.ps1
 ```
 
-The build script compiles the release executable and copies the required Qt
-runtime libraries into `scr/_gui/build`. The GUI uses the default webcam when
-one is available and displays a dark circular placeholder otherwise.
+`run_gui.ps1` automatically builds when the executable is missing or older than
+the sources. Force a clean build and launch with:
+
+```powershell
+.\scr\_gui\run_gui.ps1 -Rebuild
+```
+
+The build script refreshes cached absolute paths and safely closes a running GUI
+before relinking. The launch script returns the PowerShell prompt immediately.
 

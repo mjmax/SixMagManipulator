@@ -9,6 +9,8 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPaintEvent>
+#include <QPushButton>
+#include <QResizeEvent>
 #include <QRadialGradient>
 #include <QVideoFrame>
 
@@ -40,9 +42,51 @@ ManipulatorView::ManipulatorView(QWidget *parent)
     setObjectName("manipulatorView");
     setMinimumSize(620, 580);
     setAttribute(Qt::WA_OpaquePaintEvent);
+
+    m_clearTraceButton = new QPushButton(QStringLiteral("Clear\nTrace"), this);
+    m_clearTraceButton->setObjectName("workspaceClearTraceButton");
+    m_clearTraceButton->setFixedSize(62, 62);
+    m_clearTraceButton->setFocusPolicy(Qt::NoFocus);
+    m_clearTraceButton->setToolTip("Remove all recorded object-path points");
+    m_clearTraceButton->setStyleSheet(R"(
+        QPushButton#workspaceClearTraceButton {
+            background: rgba(19, 28, 38, 232);
+            color: #eef3f8;
+            border: 1px solid #53677d;
+            border-radius: 7px;
+            font-size: 10px;
+            font-weight: 700;
+            padding: 3px;
+        }
+        QPushButton#workspaceClearTraceButton:hover {
+            background: rgba(45, 65, 85, 242);
+            border-color: #7d9bbc;
+        }
+        QPushButton#workspaceClearTraceButton:pressed {
+            background: rgba(14, 22, 30, 245);
+        }
+    )");
+    connect(m_clearTraceButton, &QPushButton::clicked,
+            this, &ManipulatorView::clearTrace);
+
+    m_cameraClock.start();
+    m_imageTracker = new ImageTracker(this);
+    connect(m_imageTracker, &ImageTracker::visualizationResultReady,
+            this, &ManipulatorView::receiveTrackingVisualization,
+            Qt::QueuedConnection);
+    m_imageTracker->start(QThread::HighPriority);
+
     connect(&m_videoSink, &QVideoSink::videoFrameChanged,
             this, &ManipulatorView::receiveVideoFrame);
     startDefaultCamera();
+}
+
+ManipulatorView::~ManipulatorView()
+{
+    if (m_camera)
+        m_camera->stop();
+    if (m_imageTracker)
+        m_imageTracker->stop();
 }
 
 QSize ManipulatorView::sizeHint() const
@@ -80,6 +124,80 @@ void ManipulatorView::setServoAngleLimits(double lowerDegrees, double upperDegre
     update();
 }
 
+void ManipulatorView::setDetectionThreshold(int threshold)
+{
+    ImageProcessingSettings settings = m_imageTracker->settings();
+    settings.threshold = threshold;
+    applyImageProcessingSettings(settings);
+}
+
+void ManipulatorView::setDetectionMinimumArea(int pixels)
+{
+    ImageProcessingSettings settings = m_imageTracker->settings();
+    settings.minimumAreaPixels = pixels;
+    applyImageProcessingSettings(settings);
+}
+
+void ManipulatorView::setDetectionMaximumArea(int pixels)
+{
+    ImageProcessingSettings settings = m_imageTracker->settings();
+    settings.maximumAreaPixels = pixels;
+    applyImageProcessingSettings(settings);
+}
+
+void ManipulatorView::setDetectionMinimumCircularity(double circularity)
+{
+    ImageProcessingSettings settings = m_imageTracker->settings();
+    settings.minimumCircularity = circularity;
+    applyImageProcessingSettings(settings);
+}
+
+void ManipulatorView::setVisualizationRate(int framesPerSecond)
+{
+    ImageProcessingSettings settings = m_imageTracker->settings();
+    settings.visualizationRateHz = framesPerSecond;
+    applyImageProcessingSettings(settings);
+}
+
+void ManipulatorView::setTraceColor(const QColor &color)
+{
+    if (!color.isValid())
+        return;
+    m_traceColor = color;
+    update();
+}
+
+void ManipulatorView::setTraceWidth(double pixels)
+{
+    if (!std::isfinite(pixels))
+        return;
+    m_traceWidth = std::clamp(pixels, 0.5, 12.0);
+    update();
+}
+
+void ManipulatorView::setTraceEnabled(bool enabled)
+{
+    if (m_traceEnabled == enabled)
+        return;
+    m_traceEnabled = enabled;
+    // Never join two separately recorded intervals with a straight line.
+    m_startNewTraceSegment = true;
+}
+
+void ManipulatorView::clearTrace()
+{
+    m_traceSegments.clear();
+    m_startNewTraceSegment = true;
+    update();
+}
+
+void ManipulatorView::applyImageProcessingSettings(
+    const ImageProcessingSettings &settings)
+{
+    m_imageTracker->setSettings(settings);
+    m_visualizationRateHz = m_imageTracker->settings().visualizationRateHz;
+}
+
 void ManipulatorView::startDefaultCamera()
 {
     const QCameraDevice device = QMediaDevices::defaultVideoInput();
@@ -96,8 +214,64 @@ void ManipulatorView::receiveVideoFrame(const QVideoFrame &frame)
     const QImage image = frame.toImage();
     if (image.isNull())
         return;
-    m_latestFrame = image;
+
+    // Every frame reaches the latest-frame detector. Only a low-rate frame is
+    // retained by the GUI, and QImage implicit sharing avoids a second pixel copy.
+    m_imageTracker->submitFrame(image, m_cameraClock.nsecsElapsed());
+
+    const int displayInterval = std::max(1, 1000 / m_visualizationRateHz);
+    if (!m_displayFrameClock.isValid()
+        || m_displayFrameClock.elapsed() >= displayInterval) {
+        m_latestDisplayFrame = image;
+        m_displayFrameClock.restart();
+        update();
+    }
+}
+
+void ManipulatorView::receiveTrackingVisualization(const TrackingResult &result)
+{
+    if (result.objects.isEmpty()) {
+        m_objectDetected = false;
+        m_startNewTraceSegment = true;
+        emit trackingStatusChanged(
+            false, {}, result.detectionMilliseconds,
+            result.processingFramesPerSecond);
+        update();
+        return;
+    }
+
+    const TrackedObject &object = result.objects.first();
+    m_objectDetected = true;
+    m_objectPosition = object.normalizedPosition;
+    m_objectRadius = object.normalizedRadius;
+    if (m_traceEnabled)
+        appendTracePoint(m_objectPosition);
+    emit trackingStatusChanged(
+        true, m_objectPosition, result.detectionMilliseconds,
+        result.processingFramesPerSecond);
     update();
+}
+
+void ManipulatorView::appendTracePoint(const QPointF &normalizedPosition)
+{
+    if (m_startNewTraceSegment || m_traceSegments.isEmpty()) {
+        m_traceSegments.push_back({});
+        m_startNewTraceSegment = false;
+    }
+
+    QVector<QPointF> &segment = m_traceSegments.last();
+    if (!segment.isEmpty()) {
+        const QPointF delta = normalizedPosition - segment.last();
+        if (delta.x() * delta.x() + delta.y() * delta.y() < 1.0e-7)
+            return;
+    }
+    segment.push_back(normalizedPosition);
+
+    // Bound visualization memory while retaining several minutes of motion.
+    if (segment.size() > 20000)
+        segment.remove(0, 5000);
+    while (m_traceSegments.size() > 128)
+        m_traceSegments.removeFirst();
 }
 
 void ManipulatorView::paintEvent(QPaintEvent *event)
@@ -107,6 +281,16 @@ void ManipulatorView::paintEvent(QPaintEvent *event)
     painter.setRenderHint(QPainter::Antialiasing, true);
     painter.fillRect(rect(), QColor("#141b24"));
     drawManipulator(painter, rect().adjusted(18, 18, -18, -18));
+}
+
+void ManipulatorView::resizeEvent(QResizeEvent *event)
+{
+    QWidget::resizeEvent(event);
+    constexpr int margin = 12;
+    m_clearTraceButton->move(
+        std::max(margin, width() - m_clearTraceButton->width() - margin),
+        margin);
+    m_clearTraceButton->raise();
 }
 
 void ManipulatorView::drawManipulator(QPainter &painter, const QRectF &area)
@@ -166,14 +350,19 @@ void ManipulatorView::drawManipulator(QPainter &painter, const QRectF &area)
 
     painter.setPen(QColor("#8997a8"));
     painter.setFont(QFont("Segoe UI", 9, QFont::DemiBold));
+    QString cameraStatus = m_latestDisplayFrame.isNull()
+        ? QStringLiteral("CAMERA OFFLINE")
+        : (m_objectDetected
+            ? QStringLiteral("OBJECT TRACKING")
+            : QStringLiteral("SEARCHING WORKSPACE"));
     painter.drawText(QRectF(area.left(), area.bottom() - 22, designSize, 20),
                      Qt::AlignCenter,
-                     m_latestFrame.isNull()
-                         ? "CAMERA OFFLINE  •  MAGNET ANGLES 0°"
-                         : "LIVE WORKSPACE  •  MAGNET ANGLES 0°");
+                     cameraStatus + QStringLiteral("  •  MAGNET ANGLES 0°"));
 }
 
-void ManipulatorView::drawWorkspace(QPainter &painter, const QPointF &center, double radius)
+void ManipulatorView::drawWorkspace(QPainter &painter,
+                                    const QPointF &center,
+                                    double radius)
 {
     const QRectF circle(center.x() - radius, center.y() - radius,
                         radius * 2.0, radius * 2.0);
@@ -185,17 +374,16 @@ void ManipulatorView::drawWorkspace(QPainter &painter, const QPointF &center, do
     QPainterPath circularClip;
     circularClip.addEllipse(circle);
     painter.setClipPath(circularClip);
-    if (!m_latestFrame.isNull()) {
-        const QSize targetSize(
-            std::max(1, static_cast<int>(std::ceil(circle.width()))),
-            std::max(1, static_cast<int>(std::ceil(circle.height()))));
-        const QImage scaled = m_latestFrame.scaled(
-            targetSize, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
-        const QRect source(
-            std::max(0, (scaled.width() - targetSize.width()) / 2),
-            std::max(0, (scaled.height() - targetSize.height()) / 2),
-            targetSize.width(), targetSize.height());
-        painter.drawImage(circle, scaled, source);
+    if (!m_latestDisplayFrame.isNull()) {
+        const int sourceSide = std::min(
+            m_latestDisplayFrame.width(), m_latestDisplayFrame.height());
+        const QRectF source(
+            (m_latestDisplayFrame.width() - sourceSide) * 0.5,
+            (m_latestDisplayFrame.height() - sourceSide) * 0.5,
+            sourceSide,
+            sourceSide);
+        painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+        painter.drawImage(circle, m_latestDisplayFrame, source);
     } else {
         QRadialGradient glass(center - QPointF(radius * 0.25, radius * 0.3),
                               radius * 1.25);
@@ -203,6 +391,39 @@ void ManipulatorView::drawWorkspace(QPainter &painter, const QPointF &center, do
         glass.setColorAt(0.55, QColor("#111a23"));
         glass.setColorAt(1.0, QColor("#05090e"));
         painter.fillRect(circle, glass);
+    }
+
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setBrush(Qt::NoBrush);
+    painter.setPen(QPen(m_traceColor, m_traceWidth,
+                        Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    for (const QVector<QPointF> &segment : m_traceSegments) {
+        if (segment.isEmpty())
+            continue;
+        QPainterPath trace;
+        const auto mapPoint = [&circle](const QPointF &point) {
+            return QPointF(
+                circle.left() + point.x() * circle.width(),
+                circle.top() + point.y() * circle.height());
+        };
+        trace.moveTo(mapPoint(segment.first()));
+        for (int index = 1; index < segment.size(); ++index)
+            trace.lineTo(mapPoint(segment[index]));
+        painter.drawPath(trace);
+    }
+
+    if (m_objectDetected) {
+        const QPointF marker(
+            circle.left() + m_objectPosition.x() * circle.width(),
+            circle.top() + m_objectPosition.y() * circle.height());
+        const double markerRadius = std::max(
+            4.0, m_objectRadius * circle.width());
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(QPen(QColor("#58f0a4"), 2.0));
+        painter.drawEllipse(marker, markerRadius + 3.0, markerRadius + 3.0);
+        painter.setBrush(QColor(88, 240, 164, 190));
+        painter.setPen(QPen(QColor("#f4fff9"), 1.0));
+        painter.drawEllipse(marker, 2.5, 2.5);
     }
     painter.restore();
 

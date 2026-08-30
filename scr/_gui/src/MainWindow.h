@@ -2,6 +2,7 @@
 
 #include <QMainWindow>
 
+class QLabel;
 class ManipulatorView;
 
 class MainWindow final : public QMainWindow
@@ -13,5 +14,8 @@ public:
 
 private:
     ManipulatorView *m_manipulatorView = nullptr;
+    QLabel *m_trackingState = nullptr;
+    QLabel *m_trackingPosition = nullptr;
+    QLabel *m_trackingPerformance = nullptr;
 };
 
