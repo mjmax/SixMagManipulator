@@ -1,10 +1,12 @@
 #include "MainWindow.h"
 
 #include "ManipulatorView.h"
+#include "MotorController.h"
 
 #include <QAbstractSpinBox>
 #include <QApplication>
 #include <QComboBox>
+#include <QCloseEvent>
 #include <QDoubleSpinBox>
 #include <QGridLayout>
 #include <QFrame>
@@ -12,15 +14,22 @@
 #include <QIcon>
 #include <QEvent>
 #include <QLabel>
+#include <QLocale>
 #include <QPainter>
 #include <QPixmap>
 #include <QPointer>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QSpinBox>
 #include <QSplitter>
 #include <QTabWidget>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
+
+#include <algorithm>
+#include <functional>
+#include <utility>
 
 namespace {
 class SpinArrowOverlay final : public QObject
@@ -122,6 +131,28 @@ private:
 
     QComboBox *m_comboBox = nullptr;
     QLabel *m_arrow = nullptr;
+};
+
+class PortComboBox final : public QComboBox
+{
+public:
+    using QComboBox::QComboBox;
+
+    void setBeforePopup(std::function<void()> callback)
+    {
+        m_beforePopup = std::move(callback);
+    }
+
+protected:
+    void showPopup() override
+    {
+        if (m_beforePopup)
+            m_beforePopup();
+        QComboBox::showPopup();
+    }
+
+private:
+    std::function<void()> m_beforePopup;
 };
 
 class CompactTabWidget final : public QTabWidget
@@ -277,6 +308,7 @@ MainWindow::MainWindow(QWidget *parent)
     content->setSpacing(18);
 
     m_manipulatorView = new ManipulatorView;
+    m_motorController = new MotorController(this);
     m_manipulatorView->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     content->addWidget(m_manipulatorView, 1);
 
@@ -325,7 +357,101 @@ MainWindow::MainWindow(QWidget *parent)
     tabs->setMinimumHeight(0);
     tabs->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
     auto *controlTab = new QWidget;
+    auto *actuatorsTab = new QWidget;
     auto *imageProcessingTab = new QWidget;
+
+    auto *actuatorLayout = new QVBoxLayout(actuatorsTab);
+    actuatorLayout->setContentsMargins(10, 8, 10, 8);
+    actuatorLayout->setSpacing(10);
+
+    auto *actuatorForm = new QGridLayout;
+    actuatorForm->setContentsMargins(0, 0, 0, 0);
+    actuatorForm->setHorizontalSpacing(10);
+    actuatorForm->setVerticalSpacing(3);
+
+    auto *portSelector = new PortComboBox;
+    portSelector->setObjectName("actuatorPortSelector");
+    portSelector->setFixedWidth(170);
+    portSelector->setToolTip("USB2Dynamixel COM port or the local test simulator");
+
+    auto *baudSelector = new QComboBox;
+    baudSelector->setObjectName("actuatorBaudSelector");
+    baudSelector->setFixedWidth(112);
+    const QList<int> supportedBaudRates = {
+        9600, 19200, 57600, 115200, 200000,
+        250000, 400000, 500000, 1000000
+    };
+    for (const int baudRate : supportedBaudRates) {
+        baudSelector->addItem(
+            QLocale(QLocale::English).toString(baudRate), baudRate);
+    }
+    baudSelector->setCurrentIndex(baudSelector->findData(1000000));
+
+    new ComboArrowOverlay(portSelector);
+    new ComboArrowOverlay(baudSelector);
+
+    auto *motorConnectButton = new QPushButton("Connect");
+    motorConnectButton->setObjectName("motorConnectButton");
+    motorConnectButton->setFixedSize(118, 28);
+    motorConnectButton->setProperty("connectionState",
+                                    MotorController::Disconnected);
+
+    actuatorForm->addWidget(makeFieldLabel("COM port"), 0, 0);
+    actuatorForm->addWidget(makeFieldLabel("Baud rate"), 0, 1);
+    actuatorForm->addWidget(makeFieldLabel("Connection"), 0, 2);
+    actuatorForm->addWidget(portSelector, 1, 0, Qt::AlignLeft);
+    actuatorForm->addWidget(baudSelector, 1, 1, Qt::AlignLeft);
+    actuatorForm->addWidget(motorConnectButton, 1, 2, Qt::AlignLeft);
+    actuatorForm->setColumnStretch(3, 1);
+    actuatorLayout->addLayout(actuatorForm);
+
+    auto *motorStatusRow = new QHBoxLayout;
+    motorStatusRow->setContentsMargins(0, 2, 0, 0);
+    motorStatusRow->setSpacing(8);
+    auto *motorStatusLabel = new QLabel("MOTOR STATUS");
+    motorStatusLabel->setObjectName("fieldLabel");
+    motorStatusRow->addWidget(motorStatusLabel);
+    QVector<QFrame *> motorStatusLights;
+    motorStatusLights.reserve(6);
+    for (int id = 0; id < 6; ++id) {
+        auto *idLabel = new QLabel(QStringLiteral("M%1").arg(id + 1));
+        idLabel->setObjectName("motorIdLabel");
+        auto *light = new QFrame;
+        light->setObjectName("motorStatusLight");
+        light->setFixedSize(16, 16);
+        light->setProperty("motorState", 0);
+        light->setToolTip(QStringLiteral("M%1 / servo ID %2: unavailable")
+                              .arg(id + 1).arg(id));
+        motorStatusLights.append(light);
+        motorStatusRow->addSpacing(id == 0 ? 4 : 2);
+        motorStatusRow->addWidget(idLabel);
+        motorStatusRow->addWidget(light);
+    }
+    motorStatusRow->addStretch();
+    actuatorLayout->addLayout(motorStatusRow);
+    actuatorLayout->addStretch();
+
+    auto refreshActuatorPorts = [portSelector] {
+        if (!portSelector->isEnabled())
+            return;
+        const QString selectedEndpoint = portSelector->currentData().toString();
+        QSignalBlocker blocker(portSelector);
+        portSelector->clear();
+        for (const auto &endpoint : MotorController::availableEndpoints())
+            portSelector->addItem(endpoint.first, endpoint.second);
+        const int previousIndex = portSelector->findData(selectedEndpoint);
+        if (previousIndex >= 0)
+            portSelector->setCurrentIndex(previousIndex);
+    };
+    portSelector->setBeforePopup(refreshActuatorPorts);
+    refreshActuatorPorts();
+
+    auto *portRefreshTimer = new QTimer(actuatorsTab);
+    portRefreshTimer->setInterval(1000);
+    connect(portRefreshTimer, &QTimer::timeout,
+            this, refreshActuatorPorts);
+    portRefreshTimer->start();
+
     auto *imageLayout = new QVBoxLayout(imageProcessingTab);
     imageLayout->setContentsMargins(10, 8, 10, 8);
     imageLayout->setSpacing(4);
@@ -441,6 +567,7 @@ MainWindow::MainWindow(QWidget *parent)
     imageLayout->addStretch();
 
     tabs->addTab(controlTab, "Control");
+    tabs->addTab(actuatorsTab, "Actuators");
     tabs->addTab(imageProcessingTab, "Image Processing");
     controlLayout->addWidget(tabs, 1);
     rightColumn->addWidget(controlPanel);
@@ -449,6 +576,75 @@ MainWindow::MainWindow(QWidget *parent)
     rightColumn->setSizes({1, 1});
     content->addWidget(rightColumn, 1);
     root->addLayout(content, 1);
+
+    connect(motorConnectButton, &QPushButton::clicked,
+            this, [this, portSelector, baudSelector, motorConnectButton] {
+        const int state =
+            motorConnectButton->property("connectionState").toInt();
+        if (state == MotorController::Connected) {
+            m_motorController->disconnectEndpoint();
+            return;
+        }
+        const QString endpoint = portSelector->currentData().toString();
+        if (!endpoint.isEmpty()) {
+            m_motorController->connectEndpoint(
+                endpoint, baudSelector->currentData().toInt());
+        }
+    });
+    connect(m_motorController, &MotorController::connectionStateChanged,
+            this, [portSelector, baudSelector, motorConnectButton](
+                      int state, const QString &message) {
+        motorConnectButton->setProperty("connectionState", state);
+        switch (state) {
+        case MotorController::Connecting:
+            motorConnectButton->setText("Scanning...");
+            motorConnectButton->setEnabled(false);
+            break;
+        case MotorController::Connected:
+            motorConnectButton->setText("Connected");
+            motorConnectButton->setEnabled(true);
+            break;
+        case MotorController::CommunicationError:
+            motorConnectButton->setText("Reconnect");
+            motorConnectButton->setEnabled(true);
+            break;
+        default:
+            motorConnectButton->setText("Connect");
+            motorConnectButton->setEnabled(true);
+            break;
+        }
+        const bool settingsEnabled =
+            state != MotorController::Connecting
+            && state != MotorController::Connected;
+        portSelector->setEnabled(settingsEnabled);
+        baudSelector->setEnabled(settingsEnabled);
+        motorConnectButton->setToolTip(message);
+        motorConnectButton->style()->unpolish(motorConnectButton);
+        motorConnectButton->style()->polish(motorConnectButton);
+    });
+    connect(m_motorController, &MotorController::motorStatesChanged,
+            this, [motorStatusLights](const QVector<int> &states) {
+        const int count = std::min(motorStatusLights.size(), states.size());
+        for (int index = 0; index < count; ++index) {
+            QFrame *light = motorStatusLights[index];
+            light->setProperty("motorState", states[index]);
+            const QString condition = states[index] == 1
+                ? QStringLiteral("available")
+                : (states[index] == 2
+                    ? QStringLiteral("communication error")
+                    : QStringLiteral("unavailable"));
+            light->setToolTip(QStringLiteral("M%1 / servo ID %2: %3")
+                                  .arg(index + 1).arg(index).arg(condition));
+            light->style()->unpolish(light);
+            light->style()->polish(light);
+        }
+    });
+    connect(m_motorController, &MotorController::guiAnglesReady,
+            this, [this](const QVector<double> &angles) {
+        const int count = std::min(6, static_cast<int>(angles.size()));
+        for (int index = 0; index < count; ++index)
+            m_manipulatorView->setMagnetAngle(index, angles[index]);
+    });
 
     connect(traceToggle, &QPushButton::toggled,
             this, [this, traceToggle](bool enabled) {
@@ -630,6 +826,52 @@ MainWindow::MainWindow(QWidget *parent)
             selection-background-color: #26384b;
             padding: 4px;
         }
+        QLabel#motorIdLabel {
+            color: #aebac7;
+            font-size: 9px;
+            font-weight: 700;
+        }
+        QFrame#motorStatusLight {
+            background: #303a46;
+            border: 1px solid #647181;
+            border-radius: 8px;
+        }
+        QFrame#motorStatusLight[motorState="1"] {
+            background: #32d583;
+            border: 1px solid #9affca;
+        }
+        QFrame#motorStatusLight[motorState="2"] {
+            background: #ef4f5f;
+            border: 1px solid #ff9ca6;
+        }
+        QPushButton#motorConnectButton {
+            background: #0f151d;
+            color: #d5dee8;
+            border: 1px solid #3b4b5d;
+            border-radius: 5px;
+            padding: 2px 7px;
+            font-size: 10px;
+            font-weight: 700;
+        }
+        QPushButton#motorConnectButton:hover {
+            background: #1a2633;
+            border-color: #60758c;
+        }
+        QPushButton#motorConnectButton[connectionState="1"] {
+            background: #8a651e;
+            color: #fff3d2;
+            border-color: #dbad4b;
+        }
+        QPushButton#motorConnectButton[connectionState="2"] {
+            background: #237a50;
+            color: #f4fff9;
+            border-color: #58d99a;
+        }
+        QPushButton#motorConnectButton[connectionState="3"] {
+            background: #8b2f39;
+            color: #fff1f2;
+            border-color: #f07480;
+        }
         QPushButton#traceToggleButton {
             background: #0f151d;
             color: #aab6c4;
@@ -667,5 +909,12 @@ MainWindow::MainWindow(QWidget *parent)
             background: #1d2b3a;
         }
     )");
+}
+
+void MainWindow::closeEvent(QCloseEvent *event)
+{
+    if (m_motorController)
+        m_motorController->shutdown();
+    QMainWindow::closeEvent(event);
 }
 
