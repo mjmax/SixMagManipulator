@@ -8,6 +8,7 @@ prototype.
 
 - `scr/_imgproc`: Python/OpenCV detection, webcam preview, and tests.
 - `scr/_gui`: C++/Qt 6 GUI, build scripts, and GUI documentation.
+- `scr/_motors`: Protocol 1.0 motor communication and hardware emulator.
 - `utilities`: locally installed runtimes and dependencies. This directory is
   intentionally excluded from Git and must be created on each development PC.
 
@@ -42,7 +43,7 @@ python -m venv .\utilities\qt_tools_venv
 .\utilities\qt_tools_venv\Scripts\python.exe -m pip install aqtinstall
 
 $Aqt = ".\utilities\qt_tools_venv\Scripts\aqt.exe"
-& $Aqt install-qt windows desktop 6.8.3 win64_mingw --modules qtmultimedia --outputdir .\utilities\Qt --internal
+& $Aqt install-qt windows desktop 6.8.3 win64_mingw --modules qtmultimedia qtserialport --outputdir .\utilities\Qt --internal
 & $Aqt install-tool windows desktop tools_mingw1310 qt.tools.win64_mingw1310 --outputdir .\utilities\Qt --internal
 & $Aqt install-tool windows desktop tools_cmake qt.tools.cmake --outputdir .\utilities\Qt --internal
 & $Aqt install-tool windows desktop tools_ninja qt.tools.ninja --outputdir .\utilities\Qt --internal
@@ -78,6 +79,17 @@ Run the hardware-free detector tests with:
 ```powershell
 .\utilities\venv\Scripts\python.exe .\scr\_imgproc\test_tracker.py
 ```
+
+## Run the motor emulator
+
+For hardware-free actuator testing, start the standalone six-motor emulator:
+
+```powershell
+.\scr\_motors\run_emulator.ps1
+```
+
+Keep the emulator process running, select **Simulator (localhost)** in the
+Actuators tab, leave the baud selector at 1,000,000, and press **Connect**.
 
 ## Run the Qt GUI
 

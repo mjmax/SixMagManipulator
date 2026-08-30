@@ -5,7 +5,7 @@ This module contains the C++/Qt 6 desktop GUI. It provides:
 - a circular, center-cropped live camera workspace;
 - six top-view magnet dials and servo-limit visualization;
 - low-rate object and trace rendering that does not throttle detection;
-- an **Image Processing** control tab;
+- compact **Actuators** and **Image Processing** tabs;
 - detector status and a **Clear trace path** button.
 
 ## Integrated image processing
@@ -26,6 +26,18 @@ future control loop. `fastResultReady` is emitted after every processed frame;
 as a collection and the detector can return up to two objects, although the
 current application deliberately requests one object.
 
+## Actuator communication
+
+The actuator worker in `scr/_motors` communicates with AX-18A motors using
+DYNAMIXEL Protocol 1.0. It scans IDs 0 through 5, acquires present positions on
+a high-priority thread, stores a thread-safe latest snapshot for future control,
+and limits magnet-dial updates to 15 Hz. The Actuators tab provides automatic
+COM-port discovery, a baud-rate selector defaulting to 1,000,000, one
+connect/scan button, and six status lights.
+
+Run `scr/_motors/run_emulator.ps1` to test the same scan and acquisition path
+without hardware, then select **Simulator (localhost)** before connecting.
+
 ## Image Processing controls
 
 - Dark-pixel threshold
@@ -37,7 +49,7 @@ current application deliberately requests one object.
 
 ## Build and run
 
-Qt 6.8.3, Qt Multimedia, CMake, Ninja, and the matching MinGW compiler are
+Qt 6.8.3, Qt Multimedia, Qt SerialPort, CMake, Ninja, and the matching MinGW compiler are
 expected under `utilities/Qt`. From any PowerShell directory, use the scripts by
 their appropriate relative or absolute paths. From the repository root:
 
