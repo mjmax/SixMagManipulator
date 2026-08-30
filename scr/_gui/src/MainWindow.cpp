@@ -18,6 +18,7 @@
 #include <QPainter>
 #include <QPixmap>
 #include <QPointer>
+#include <QProcess>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSpinBox>
@@ -915,6 +916,18 @@ void MainWindow::closeEvent(QCloseEvent *event)
 {
     if (m_motorController)
         m_motorController->shutdown();
+
+#ifdef Q_OS_WIN
+    QProcess::execute(QStringLiteral("taskkill"),
+                      {QStringLiteral("/IM"),
+                       QStringLiteral("SixMagMotorEmulator.exe"),
+                       QStringLiteral("/T"),
+                       QStringLiteral("/F")});
+#else
+    QProcess::execute(QStringLiteral("pkill"),
+                      {QStringLiteral("-x"),
+                       QStringLiteral("SixMagMotorEmulator")});
+#endif
+
     QMainWindow::closeEvent(event);
 }
-

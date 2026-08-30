@@ -90,6 +90,7 @@ For hardware-free actuator testing, start the standalone six-motor emulator:
 
 Keep the emulator process running, select **Simulator (localhost)** in the
 Actuators tab, leave the baud selector at 1,000,000, and press **Connect**.
+Closing the main GUI also terminates the emulator process if it is running.
 
 ## Run the Qt GUI
 
@@ -102,4 +103,3 @@ After building, start the interface with:
 The GUI uses the default webcam when available. It currently visualizes the
 circular workspace, six magnet orientations, configurable servo angle limits,
 and saturation warnings. See `scr/_gui/README.md` for implementation details.
-

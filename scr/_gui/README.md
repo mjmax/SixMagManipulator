@@ -36,7 +36,8 @@ COM-port discovery, a baud-rate selector defaulting to 1,000,000, one
 connect/scan button, and six status lights.
 
 Run `scr/_motors/run_emulator.ps1` to test the same scan and acquisition path
-without hardware, then select **Simulator (localhost)** before connecting.
+without hardware, then select **Simulator (localhost)** before connecting. The
+emulator is automatically terminated when the main GUI closes.
 
 ## Image Processing controls
 
@@ -67,4 +68,3 @@ the sources. Force a clean build and launch with:
 
 The build script refreshes cached absolute paths and safely closes a running GUI
 before relinking. The launch script returns the PowerShell prompt immediately.
-
