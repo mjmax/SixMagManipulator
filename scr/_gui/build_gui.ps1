@@ -15,6 +15,7 @@ $Ninja = Join-Path $QtRoot "Tools\Ninja\ninja.exe"
 $CxxCompiler = Join-Path $CompilerBin "g++.exe"
 $DeployQt = Join-Path $QtPrefix "bin\windeployqt.exe"
 $QtConfig = Join-Path $QtPrefix "lib\cmake\Qt6\Qt6Config.cmake"
+$QtSerialPortConfig = Join-Path $QtPrefix "lib\cmake\Qt6SerialPort\Qt6SerialPortConfig.cmake"
 $BuildDirectory = Join-Path $GuiDirectory "build"
 $Executable = Join-Path $BuildDirectory "SixMagManipulatorGui.exe"
 
@@ -24,6 +25,7 @@ $RequiredPaths = [ordered]@{
     "MinGW C++ compiler" = $CxxCompiler
     "Qt deployment tool" = $DeployQt
     "Qt 6 package configuration" = $QtConfig
+    "Qt SerialPort module" = $QtSerialPortConfig
 }
 
 foreach ($Component in $RequiredPaths.GetEnumerator()) {
@@ -35,7 +37,9 @@ foreach ($Component in $RequiredPaths.GetEnumerator()) {
 # Windows locks a running executable. The process name is unique to this GUI,
 # so close existing instances even if the same folder is reached through a
 # different drive alias (for example W: instead of its physical D: path).
-$RunningInstances = @(Get-Process -Name "SixMagManipulatorGui" -ErrorAction SilentlyContinue)
+$RunningInstances = @(
+    Get-Process -Name "SixMagManipulatorGui", "SixMagMotorEmulator" -ErrorAction SilentlyContinue
+)
 if ($RunningInstances.Count -gt 0) {
     Write-Host "Closing the running GUI before rebuilding..."
     $RunningInstances | Stop-Process -Force
