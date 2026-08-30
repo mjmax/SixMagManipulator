@@ -2,6 +2,8 @@
 
 #include "ManipulatorView.h"
 
+#include <QAbstractSpinBox>
+#include <QApplication>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QGridLayout>
@@ -12,6 +14,7 @@
 #include <QLabel>
 #include <QPainter>
 #include <QPixmap>
+#include <QPointer>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QSplitter>
@@ -151,6 +154,82 @@ public:
     QSize sizeHint() const override { return {300, 600}; }
 };
 
+class EditorFocusReleaseFilter final : public QObject
+{
+public:
+    explicit EditorFocusReleaseFilter(QWidget *window)
+        : QObject(window), m_window(window)
+    {
+        m_window->setFocusPolicy(Qt::StrongFocus);
+    }
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        auto *eventWidget = qobject_cast<QWidget *>(watched);
+
+        if (event->type() == QEvent::FocusIn) {
+            if (QWidget *editor = editorFor(eventWidget))
+                m_activeEditor = editor;
+            else
+                m_activeEditor.clear();
+        } else if (event->type() == QEvent::MouseButtonPress) {
+            QWidget *editor = editorFor(QApplication::focusWidget());
+            if (!editor)
+                editor = m_activeEditor.data();
+            if (editor) {
+                const bool clickedOutside = !eventWidget
+                    || (eventWidget != editor
+                        && !editor->isAncestorOf(eventWidget));
+                if (clickedOutside) {
+                    m_activeEditor = editor;
+                    releaseEditorFocus();
+                }
+            }
+        } else if (event->type() == QEvent::WindowDeactivate
+                   && eventWidget && eventWidget->window() == m_window) {
+            releaseEditorFocus();
+        }
+
+        return QObject::eventFilter(watched, event);
+    }
+
+private:
+    QWidget *editorFor(QWidget *widget) const
+    {
+        while (widget) {
+            if (qobject_cast<QAbstractSpinBox *>(widget)
+                || qobject_cast<QComboBox *>(widget)) {
+                return widget;
+            }
+            if (widget == m_window)
+                break;
+            widget = widget->parentWidget();
+        }
+        return nullptr;
+    }
+
+    void releaseEditorFocus()
+    {
+        QWidget *editor = m_activeEditor.data();
+        m_activeEditor.clear();
+        if (editor) {
+            QWidget *focusedWidget = QApplication::focusWidget();
+            if (focusedWidget
+                && (focusedWidget == editor
+                    || editor->isAncestorOf(focusedWidget))) {
+                focusedWidget->clearFocus();
+            }
+            editor->clearFocus();
+            if (m_window->isActiveWindow())
+                m_window->setFocus(Qt::MouseFocusReason);
+        }
+    }
+
+    QWidget *m_window = nullptr;
+    QPointer<QWidget> m_activeEditor;
+};
+
 QIcon colorIcon(const QColor &color)
 {
     QPixmap swatch(42, 22);
@@ -181,6 +260,7 @@ MainWindow::MainWindow(QWidget *parent)
     auto *central = new QWidget;
     central->setObjectName("central");
     setCentralWidget(central);
+    qApp->installEventFilter(new EditorFocusReleaseFilter(this));
 
     auto *root = new QVBoxLayout(central);
     root->setContentsMargins(24, 18, 24, 24);
