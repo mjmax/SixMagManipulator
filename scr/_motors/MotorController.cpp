@@ -50,9 +50,8 @@ public slots:
     {
         m_pollTimer = new QTimer(this);
         m_pollTimer->setTimerType(Qt::PreciseTimer);
-        // Yield briefly between complete six-servo cycles. Real serial I/O
-        // normally dominates this interval; the yield prevents a localhost
-        // simulator from busy-spinning while retaining high control bandwidth.
+        // The interval is selected when an endpoint connects: real hardware
+        // polls again immediately, while the simulator retains a short yield.
         m_pollTimer->setInterval(1);
         connect(m_pollTimer, &QTimer::timeout,
                 this, &MotorWorker::pollPositions);
@@ -88,7 +87,10 @@ public slots:
             QStringLiteral("Scanning configured motor IDs..."));
         emit motorStatesChanged(QVector<int>(motorCount, 0));
 
-        if (endpoint.startsWith(QStringLiteral("simulator://"))) {
+        const bool usingSimulator =
+            endpoint.startsWith(QStringLiteral("simulator://"));
+        m_pollTimer->setInterval(usingSimulator ? 1 : 0);
+        if (usingSimulator) {
             auto *socket = new QTcpSocket(this);
             socket->connectToHost(QHostAddress::LocalHost, simulatorPort);
             if (!socket->waitForConnected(600)) {

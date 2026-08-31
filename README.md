@@ -80,6 +80,21 @@ Run the hardware-free detector tests with:
 .\utilities\venv\Scripts\python.exe .\scr\_imgproc\test_tracker.py
 ```
 
+## Configure low-latency USB2Dynamixel communication
+
+The supported hardware path uses the FTDI Virtual COM Port driver at 1 ms
+latency. Run this one-time setup for the USB2Dynamixel COM port:
+
+```powershell
+.\scr\_motors\configure_ftdi_latency.ps1 -PortName COM3
+```
+
+The script verifies that the selected port is an FTDI device, requests
+administrator permission only when a change is required, and restarts that
+adapter so the new value takes effect. Run it again after reinstalling the FTDI
+driver or when using a different PC or adapter. This setting does not change any
+DYNAMIXEL control-table value.
+
 ## Run the motor emulator
 
 For hardware-free actuator testing, start the standalone six-motor emulator:
