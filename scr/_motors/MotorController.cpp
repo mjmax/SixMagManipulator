@@ -9,6 +9,7 @@
 #include <QMutexLocker>
 #include <QSerialPort>
 #include <QSerialPortInfo>
+#include <QSet>
 #include <QTcpSocket>
 #include <QThread>
 #include <QTimer>
@@ -57,11 +58,34 @@ public slots:
                 this, &MotorWorker::pollPositions);
     }
 
-    void connectEndpoint(const QString &endpoint, int baudRate)
+    void connectEndpoint(const QString &endpoint, int baudRate,
+                         const QVector<int> &motorIds)
     {
         closeDevice(false);
-        emit connectionStateChanged(MotorController::Connecting,
-                                    QStringLiteral("Scanning motors 0-5..."));
+        if (motorIds.size() != motorCount) {
+            failConnection(QStringLiteral("Exactly six motor IDs are required"));
+            return;
+        }
+
+        QSet<int> uniqueIds;
+        for (int index = 0; index < motorCount; ++index) {
+            const int id = motorIds[index];
+            if (id < 0 || id > 253) {
+                failConnection(
+                    QStringLiteral("Motor IDs must be between 0 and 253"));
+                return;
+            }
+            if (uniqueIds.contains(id)) {
+                failConnection(QStringLiteral("Motor IDs must be unique"));
+                return;
+            }
+            uniqueIds.insert(id);
+            m_motorIds[static_cast<std::size_t>(index)] = id;
+        }
+
+        emit connectionStateChanged(
+            MotorController::Connecting,
+            QStringLiteral("Scanning configured motor IDs..."));
         emit motorStatesChanged(QVector<int>(motorCount, 0));
 
         if (endpoint.startsWith(QStringLiteral("simulator://"))) {
@@ -95,12 +119,13 @@ public slots:
 
         QVector<int> states(motorCount, 2);
         bool allFound = true;
-        for (int id = 0; id < motorCount; ++id) {
+        for (int index = 0; index < motorCount; ++index) {
+            const int id = m_motorIds[static_cast<std::size_t>(index)];
             DynamixelProtocol::Packet response;
             const bool found = transact(
                 static_cast<quint8>(id),
                 DynamixelProtocol::pingInstruction, {}, response);
-            states[id] = found ? 1 : 2;
+            states[index] = found ? 1 : 2;
             allFound = allFound && found;
         }
         emit motorStatesChanged(states);
@@ -109,7 +134,7 @@ public slots:
             closeDevice(false);
             emit connectionStateChanged(
                 MotorController::CommunicationError,
-                QStringLiteral("Not all motors 0-5 responded"));
+                QStringLiteral("Not all configured motors responded"));
             return;
         }
 
@@ -136,7 +161,8 @@ private slots:
         std::array<double, motorCount> angles{};
         bool allHealthy = true;
         bool statesChanged = false;
-        for (int id = 0; id < motorCount; ++id) {
+        for (int index = 0; index < motorCount; ++index) {
+            const int id = m_motorIds[static_cast<std::size_t>(index)];
             QByteArray parameters;
             parameters.append(char(presentPositionAddress));
             parameters.append(char(2));
@@ -153,17 +179,17 @@ private slots:
                 const quint16 raw = static_cast<quint8>(response.parameters.at(0))
                     | (static_cast<quint16>(
                            static_cast<quint8>(response.parameters.at(1))) << 8);
-                angles[static_cast<std::size_t>(id)] =
+                angles[static_cast<std::size_t>(index)] =
                     rawPositionToDegrees(raw);
                 newState = 1;
             } else {
                 QMutexLocker locker(&m_stateStore->mutex);
-                angles[static_cast<std::size_t>(id)] =
-                    m_stateStore->angles[static_cast<std::size_t>(id)];
+                angles[static_cast<std::size_t>(index)] =
+                    m_stateStore->angles[static_cast<std::size_t>(index)];
                 allHealthy = false;
             }
-            if (m_motorStates[static_cast<std::size_t>(id)] != newState) {
-                m_motorStates[static_cast<std::size_t>(id)] = newState;
+            if (m_motorStates[static_cast<std::size_t>(index)] != newState) {
+                m_motorStates[static_cast<std::size_t>(index)] = newState;
                 statesChanged = true;
             }
         }
@@ -286,6 +312,7 @@ private:
     QByteArray m_receiveBuffer;
     QElapsedTimer m_guiClock;
     std::array<int, motorCount> m_motorStates{};
+    std::array<int, motorCount> m_motorIds{1, 2, 3, 4, 5, 6};
     int m_lastReportedState = MotorController::Disconnected;
     bool m_connected = false;
 };
@@ -354,9 +381,10 @@ std::array<double, 6> MotorController::latestAngles() const
     return m_stateStore->angles;
 }
 
-void MotorController::connectEndpoint(const QString &endpoint, int baudRate)
+void MotorController::connectEndpoint(const QString &endpoint, int baudRate,
+                                      const QVector<int> &motorIds)
 {
-    emit connectRequested(endpoint, baudRate);
+    emit connectRequested(endpoint, baudRate, motorIds);
 }
 
 void MotorController::disconnectEndpoint()

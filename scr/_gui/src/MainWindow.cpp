@@ -408,25 +408,50 @@ MainWindow::MainWindow(QWidget *parent)
 
     auto *motorStatusRow = new QHBoxLayout;
     motorStatusRow->setContentsMargins(0, 2, 0, 0);
-    motorStatusRow->setSpacing(8);
-    auto *motorStatusLabel = new QLabel("MOTOR STATUS");
+    motorStatusRow->setSpacing(10);
+    auto *motorStatusLabel = new QLabel(
+        "<div>MOTOR STATUS</div>"
+        "<div style=\"margin-top: 18px;\">MOTOR IDs</div>");
     motorStatusLabel->setObjectName("fieldLabel");
-    motorStatusRow->addWidget(motorStatusLabel);
+    motorStatusLabel->setTextFormat(Qt::RichText);
+    motorStatusRow->addWidget(motorStatusLabel, 0, Qt::AlignTop);
     QVector<QFrame *> motorStatusLights;
+    QVector<QSpinBox *> motorIdEditors;
     motorStatusLights.reserve(6);
-    for (int id = 0; id < 6; ++id) {
-        auto *idLabel = new QLabel(QStringLiteral("M%1").arg(id + 1));
+    motorIdEditors.reserve(6);
+    for (int index = 0; index < 6; ++index) {
+        auto *motorColumn = new QVBoxLayout;
+        motorColumn->setContentsMargins(0, 0, 0, 0);
+        motorColumn->setSpacing(3);
+        motorColumn->setAlignment(Qt::AlignHCenter);
+
+        auto *idLabel = new QLabel(QStringLiteral("M%1").arg(index + 1));
         idLabel->setObjectName("motorIdLabel");
+        idLabel->setAlignment(Qt::AlignCenter);
+
         auto *light = new QFrame;
         light->setObjectName("motorStatusLight");
         light->setFixedSize(16, 16);
         light->setProperty("motorState", 0);
         light->setToolTip(QStringLiteral("M%1 / servo ID %2: unavailable")
-                              .arg(id + 1).arg(id));
+                              .arg(index + 1).arg(index + 1));
+
+        auto *idEditor = new QSpinBox;
+        idEditor->setObjectName("motorIdEditor");
+        idEditor->setRange(0, 253);
+        idEditor->setValue(index + 1);
+        idEditor->setFixedSize(44, 24);
+        idEditor->setAlignment(Qt::AlignCenter);
+        idEditor->setButtonSymbols(QAbstractSpinBox::NoButtons);
+        idEditor->setToolTip(
+            QStringLiteral("DYNAMIXEL bus ID assigned to M%1").arg(index + 1));
+
         motorStatusLights.append(light);
-        motorStatusRow->addSpacing(id == 0 ? 4 : 2);
-        motorStatusRow->addWidget(idLabel);
-        motorStatusRow->addWidget(light);
+        motorIdEditors.append(idEditor);
+        motorColumn->addWidget(idLabel, 0, Qt::AlignHCenter);
+        motorColumn->addWidget(light, 0, Qt::AlignHCenter);
+        motorColumn->addWidget(idEditor, 0, Qt::AlignHCenter);
+        motorStatusRow->addLayout(motorColumn);
     }
     motorStatusRow->addStretch();
     actuatorLayout->addLayout(motorStatusRow);
@@ -579,7 +604,8 @@ MainWindow::MainWindow(QWidget *parent)
     root->addLayout(content, 1);
 
     connect(motorConnectButton, &QPushButton::clicked,
-            this, [this, portSelector, baudSelector, motorConnectButton] {
+            this, [this, portSelector, baudSelector, motorConnectButton,
+                   motorIdEditors] {
         const int state =
             motorConnectButton->property("connectionState").toInt();
         if (state == MotorController::Connected) {
@@ -588,8 +614,12 @@ MainWindow::MainWindow(QWidget *parent)
         }
         const QString endpoint = portSelector->currentData().toString();
         if (!endpoint.isEmpty()) {
+            QVector<int> motorIds;
+            motorIds.reserve(motorIdEditors.size());
+            for (const QSpinBox *editor : motorIdEditors)
+                motorIds.append(editor->value());
             m_motorController->connectEndpoint(
-                endpoint, baudSelector->currentData().toInt());
+                endpoint, baudSelector->currentData().toInt(), motorIds);
         }
     });
     connect(m_motorController, &MotorController::connectionStateChanged,
@@ -624,7 +654,8 @@ MainWindow::MainWindow(QWidget *parent)
         motorConnectButton->style()->polish(motorConnectButton);
     });
     connect(m_motorController, &MotorController::motorStatesChanged,
-            this, [motorStatusLights](const QVector<int> &states) {
+            this, [motorStatusLights, motorIdEditors](
+                      const QVector<int> &states) {
         const int count = std::min(motorStatusLights.size(), states.size());
         for (int index = 0; index < count; ++index) {
             QFrame *light = motorStatusLights[index];
@@ -635,7 +666,9 @@ MainWindow::MainWindow(QWidget *parent)
                     ? QStringLiteral("communication error")
                     : QStringLiteral("unavailable"));
             light->setToolTip(QStringLiteral("M%1 / servo ID %2: %3")
-                                  .arg(index + 1).arg(index).arg(condition));
+                                  .arg(index + 1)
+                                  .arg(motorIdEditors[index]->value())
+                                  .arg(condition));
             light->style()->unpolish(light);
             light->style()->polish(light);
         }
@@ -831,6 +864,10 @@ MainWindow::MainWindow(QWidget *parent)
             color: #aebac7;
             font-size: 9px;
             font-weight: 700;
+        }
+        QSpinBox#motorIdEditor {
+            padding: 1px 3px;
+            font-size: 9px;
         }
         QFrame#motorStatusLight {
             background: #303a46;

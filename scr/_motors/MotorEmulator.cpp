@@ -48,7 +48,7 @@ int main(int argc, char *argv[])
                 buffer.append(socket->readAll());
                 DynamixelProtocol::Packet request;
                 while (DynamixelProtocol::takePacket(buffer, request)) {
-                    if (request.id >= motorCount)
+                    if (request.id == 0 || request.id > motorCount)
                         continue;
 
                     QByteArray responseParameters;
@@ -91,9 +91,8 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    output << "Six AX-18A motors (IDs 0-5) emulated on localhost:"
+    output << "Six AX-18A motors (IDs 1-6) emulated on localhost:"
            << serverPort << "\nKeep this window open while testing the GUI.\n"
            << Qt::flush;
     return application.exec();
 }
-

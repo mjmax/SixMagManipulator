@@ -34,7 +34,8 @@ public:
     void shutdown();
 
 public slots:
-    void connectEndpoint(const QString &endpoint, int baudRate);
+    void connectEndpoint(const QString &endpoint, int baudRate,
+                         const QVector<int> &motorIds);
     void disconnectEndpoint();
 
 signals:
@@ -42,7 +43,8 @@ signals:
     void motorStatesChanged(const QVector<int> &states);
     void guiAnglesReady(const QVector<double> &angles);
 
-    void connectRequested(const QString &endpoint, int baudRate);
+    void connectRequested(const QString &endpoint, int baudRate,
+                          const QVector<int> &motorIds);
     void disconnectRequested();
 
 private:
