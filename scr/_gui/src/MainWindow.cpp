@@ -608,7 +608,8 @@ MainWindow::MainWindow(QWidget *parent)
                    motorIdEditors] {
         const int state =
             motorConnectButton->property("connectionState").toInt();
-        if (state == MotorController::Connected) {
+        if (state == MotorController::Connected
+            || state == MotorController::CommunicationError) {
             m_motorController->disconnectEndpoint();
             return;
         }
@@ -636,7 +637,7 @@ MainWindow::MainWindow(QWidget *parent)
             motorConnectButton->setEnabled(true);
             break;
         case MotorController::CommunicationError:
-            motorConnectButton->setText("Reconnect");
+            motorConnectButton->setText("Disconnect");
             motorConnectButton->setEnabled(true);
             break;
         default:
