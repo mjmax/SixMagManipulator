@@ -154,12 +154,26 @@ public slots:
         closeDevice(true);
     }
 
+    void startPollBenchmark(int cycleCount)
+    {
+        if (!m_connected || !m_device || cycleCount <= 0) {
+            emit pollBenchmarkFailed(
+                QStringLiteral("Actuators are not connected"));
+            return;
+        }
+        m_benchmarkTargetCycles = cycleCount;
+        m_benchmarkCompletedCycles = 0;
+        m_benchmarkTotalMilliseconds = 0.0;
+    }
+
 private slots:
     void pollPositions()
     {
         if (!m_connected || !m_device)
             return;
 
+        QElapsedTimer cycleClock;
+        cycleClock.start();
         std::array<double, motorCount> angles{};
         bool allHealthy = true;
         bool statesChanged = false;
@@ -195,6 +209,10 @@ private slots:
                 statesChanged = true;
             }
         }
+
+        const double cycleMilliseconds =
+            cycleClock.nsecsElapsed() / 1000000.0;
+        updatePollBenchmark(cycleMilliseconds, allHealthy);
 
         {
             QMutexLocker locker(&m_stateStore->mutex);
@@ -234,8 +252,43 @@ signals:
     void connectionStateChanged(int state, const QString &message);
     void motorStatesChanged(const QVector<int> &states);
     void guiAnglesReady(const QVector<double> &angles);
+    void pollBenchmarkProgress(double averageMilliseconds,
+                               int completedCycles, int totalCycles);
+    void pollBenchmarkFinished(double averageMilliseconds);
+    void pollBenchmarkFailed(const QString &message);
 
 private:
+    void updatePollBenchmark(double cycleMilliseconds, bool successful)
+    {
+        if (m_benchmarkTargetCycles <= 0)
+            return;
+        if (!successful) {
+            m_benchmarkTargetCycles = 0;
+            m_benchmarkCompletedCycles = 0;
+            m_benchmarkTotalMilliseconds = 0.0;
+            emit pollBenchmarkFailed(
+                QStringLiteral("A motor position read failed"));
+            return;
+        }
+
+        m_benchmarkTotalMilliseconds += cycleMilliseconds;
+        ++m_benchmarkCompletedCycles;
+        const double average =
+            m_benchmarkTotalMilliseconds / m_benchmarkCompletedCycles;
+        if (m_benchmarkCompletedCycles == 1
+            || m_benchmarkCompletedCycles % 5 == 0
+            || m_benchmarkCompletedCycles == m_benchmarkTargetCycles) {
+            emit pollBenchmarkProgress(
+                average, m_benchmarkCompletedCycles, m_benchmarkTargetCycles);
+        }
+        if (m_benchmarkCompletedCycles >= m_benchmarkTargetCycles) {
+            m_benchmarkTargetCycles = 0;
+            m_benchmarkCompletedCycles = 0;
+            m_benchmarkTotalMilliseconds = 0.0;
+            emit pollBenchmarkFinished(average);
+        }
+    }
+
     bool transact(quint8 id, quint8 instruction,
                   const QByteArray &parameters,
                   DynamixelProtocol::Packet &response)
@@ -290,6 +343,13 @@ private:
 
     void closeDevice(bool reportDisconnected)
     {
+        if (m_benchmarkTargetCycles > 0) {
+            m_benchmarkTargetCycles = 0;
+            m_benchmarkCompletedCycles = 0;
+            m_benchmarkTotalMilliseconds = 0.0;
+            emit pollBenchmarkFailed(
+                QStringLiteral("Disconnected during poll test"));
+        }
         m_connected = false;
         if (m_pollTimer)
             m_pollTimer->stop();
@@ -316,6 +376,9 @@ private:
     std::array<int, motorCount> m_motorStates{};
     std::array<int, motorCount> m_motorIds{1, 2, 3, 4, 5, 6};
     int m_lastReportedState = MotorController::Disconnected;
+    int m_benchmarkTargetCycles = 0;
+    int m_benchmarkCompletedCycles = 0;
+    double m_benchmarkTotalMilliseconds = 0.0;
     bool m_connected = false;
 };
 
@@ -336,12 +399,21 @@ MotorController::MotorController(QObject *parent)
     connect(this, &MotorController::disconnectRequested,
             m_worker, &MotorWorker::disconnectEndpoint,
             Qt::QueuedConnection);
+    connect(this, &MotorController::pollBenchmarkRequested,
+            m_worker, &MotorWorker::startPollBenchmark,
+            Qt::QueuedConnection);
     connect(m_worker, &MotorWorker::connectionStateChanged,
             this, &MotorController::connectionStateChanged);
     connect(m_worker, &MotorWorker::motorStatesChanged,
             this, &MotorController::motorStatesChanged);
     connect(m_worker, &MotorWorker::guiAnglesReady,
             this, &MotorController::guiAnglesReady);
+    connect(m_worker, &MotorWorker::pollBenchmarkProgress,
+            this, &MotorController::pollBenchmarkProgress);
+    connect(m_worker, &MotorWorker::pollBenchmarkFinished,
+            this, &MotorController::pollBenchmarkFinished);
+    connect(m_worker, &MotorWorker::pollBenchmarkFailed,
+            this, &MotorController::pollBenchmarkFailed);
     m_workerThread->start(QThread::HighPriority);
 }
 
@@ -394,5 +466,9 @@ void MotorController::disconnectEndpoint()
     emit disconnectRequested();
 }
 
-#include "MotorController.moc"
+void MotorController::startPollBenchmark(int cycleCount)
+{
+    emit pollBenchmarkRequested(cycleCount);
+}
 
+#include "MotorController.moc"

@@ -134,6 +134,51 @@ private:
     QLabel *m_arrow = nullptr;
 };
 
+class RightAnchorOverlay final : public QObject
+{
+public:
+    RightAnchorOverlay(QWidget *anchor, QWidget *overlay, QWidget *parent)
+        : QObject(overlay),
+          m_anchor(anchor),
+          m_overlay(overlay),
+          m_parent(parent)
+    {
+        m_anchor->installEventFilter(this);
+        m_parent->installEventFilter(this);
+        schedulePosition();
+    }
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if ((watched == m_anchor || watched == m_parent)
+            && (event->type() == QEvent::Show
+                || event->type() == QEvent::Move
+                || event->type() == QEvent::Resize
+                || event->type() == QEvent::LayoutRequest)) {
+            schedulePosition();
+        }
+        return QObject::eventFilter(watched, event);
+    }
+
+private:
+    void schedulePosition()
+    {
+        QTimer::singleShot(0, this, [this] {
+            if (!m_anchor || !m_overlay || !m_parent)
+                return;
+            const QPoint position = m_anchor->mapTo(
+                m_parent, QPoint(m_anchor->width() + 10, 0));
+            m_overlay->move(position);
+            m_overlay->raise();
+        });
+    }
+
+    QPointer<QWidget> m_anchor;
+    QPointer<QWidget> m_overlay;
+    QPointer<QWidget> m_parent;
+};
+
 class PortComboBox final : public QComboBox
 {
 public:
@@ -397,6 +442,27 @@ MainWindow::MainWindow(QWidget *parent)
     motorConnectButton->setProperty("connectionState",
                                     MotorController::Disconnected);
 
+    auto *pollActuatorsPanel = new QWidget(actuatorsTab);
+    pollActuatorsPanel->setFixedSize(84, 74);
+    auto *pollActuatorsLayout = new QVBoxLayout(pollActuatorsPanel);
+    pollActuatorsLayout->setContentsMargins(0, 0, 0, 0);
+    pollActuatorsLayout->setSpacing(3);
+    auto *pollActuatorsButton = new QPushButton("Poll\nActuators");
+    pollActuatorsButton->setObjectName("pollActuatorsButton");
+    pollActuatorsButton->setFixedSize(68, 50);
+    pollActuatorsButton->setEnabled(false);
+    pollActuatorsButton->setProperty("benchmarkRunning", false);
+    pollActuatorsButton->setToolTip(
+        "Measure the average time for 100 complete six-motor position reads");
+    auto *pollBenchmarkLabel = new QLabel("—");
+    pollBenchmarkLabel->setObjectName("pollBenchmarkLabel");
+    pollBenchmarkLabel->setFixedSize(84, 18);
+    pollBenchmarkLabel->setAlignment(Qt::AlignCenter);
+    pollActuatorsLayout->addWidget(
+        pollActuatorsButton, 0, Qt::AlignHCenter);
+    pollActuatorsLayout->addWidget(
+        pollBenchmarkLabel, 0, Qt::AlignHCenter);
+
     actuatorForm->addWidget(makeFieldLabel("COM port"), 0, 0);
     actuatorForm->addWidget(makeFieldLabel("Baud rate"), 0, 1);
     actuatorForm->addWidget(makeFieldLabel("Connection"), 0, 2);
@@ -404,6 +470,8 @@ MainWindow::MainWindow(QWidget *parent)
     actuatorForm->addWidget(baudSelector, 1, 1, Qt::AlignLeft);
     actuatorForm->addWidget(motorConnectButton, 1, 2, Qt::AlignLeft);
     actuatorForm->setColumnStretch(3, 1);
+    new RightAnchorOverlay(
+        motorConnectButton, pollActuatorsPanel, actuatorsTab);
     actuatorLayout->addLayout(actuatorForm);
 
     auto *motorStatusRow = new QHBoxLayout;
@@ -623,8 +691,19 @@ MainWindow::MainWindow(QWidget *parent)
                 endpoint, baudSelector->currentData().toInt(), motorIds);
         }
     });
+    connect(pollActuatorsButton, &QPushButton::clicked,
+            this, [this, pollActuatorsButton, pollBenchmarkLabel] {
+        pollActuatorsButton->setProperty("benchmarkRunning", true);
+        pollActuatorsButton->setText("Polling...");
+        pollActuatorsButton->setEnabled(false);
+        pollBenchmarkLabel->setText("Starting...");
+        pollActuatorsButton->style()->unpolish(pollActuatorsButton);
+        pollActuatorsButton->style()->polish(pollActuatorsButton);
+        m_motorController->startPollBenchmark(100);
+    });
     connect(m_motorController, &MotorController::connectionStateChanged,
-            this, [portSelector, baudSelector, motorConnectButton](
+            this, [portSelector, baudSelector, motorConnectButton,
+                   motorIdEditors, pollActuatorsButton](
                       int state, const QString &message) {
         motorConnectButton->setProperty("connectionState", state);
         switch (state) {
@@ -650,9 +729,51 @@ MainWindow::MainWindow(QWidget *parent)
             && state != MotorController::Connected;
         portSelector->setEnabled(settingsEnabled);
         baudSelector->setEnabled(settingsEnabled);
+        for (QSpinBox *editor : motorIdEditors)
+            editor->setEnabled(settingsEnabled);
+        const bool benchmarkRunning =
+            pollActuatorsButton->property("benchmarkRunning").toBool();
+        pollActuatorsButton->setEnabled(
+            state == MotorController::Connected && !benchmarkRunning);
         motorConnectButton->setToolTip(message);
         motorConnectButton->style()->unpolish(motorConnectButton);
         motorConnectButton->style()->polish(motorConnectButton);
+    });
+    connect(m_motorController, &MotorController::pollBenchmarkProgress,
+            this, [pollBenchmarkLabel](double averageMilliseconds,
+                                       int completedCycles,
+                                       int totalCycles) {
+        pollBenchmarkLabel->setText(
+            QStringLiteral("%1 ms").arg(averageMilliseconds, 0, 'f', 3));
+        pollBenchmarkLabel->setToolTip(
+            QStringLiteral("%1 of %2 cycles")
+                .arg(completedCycles).arg(totalCycles));
+    });
+    connect(m_motorController, &MotorController::pollBenchmarkFinished,
+            this, [motorConnectButton, pollActuatorsButton,
+                   pollBenchmarkLabel](double averageMilliseconds) {
+        pollActuatorsButton->setProperty("benchmarkRunning", false);
+        pollActuatorsButton->setText("Poll\nActuators");
+        pollActuatorsButton->setEnabled(
+            motorConnectButton->property("connectionState").toInt()
+            == MotorController::Connected);
+        pollBenchmarkLabel->setText(
+            QStringLiteral("%1 ms").arg(averageMilliseconds, 0, 'f', 3));
+        pollActuatorsButton->style()->unpolish(pollActuatorsButton);
+        pollActuatorsButton->style()->polish(pollActuatorsButton);
+    });
+    connect(m_motorController, &MotorController::pollBenchmarkFailed,
+            this, [motorConnectButton, pollActuatorsButton,
+                   pollBenchmarkLabel](const QString &message) {
+        pollActuatorsButton->setProperty("benchmarkRunning", false);
+        pollActuatorsButton->setText("Poll\nActuators");
+        pollActuatorsButton->setEnabled(
+            motorConnectButton->property("connectionState").toInt()
+            == MotorController::Connected);
+        pollBenchmarkLabel->setText("Test Failed");
+        pollBenchmarkLabel->setToolTip(message);
+        pollActuatorsButton->style()->unpolish(pollActuatorsButton);
+        pollActuatorsButton->style()->polish(pollActuatorsButton);
     });
     connect(m_motorController, &MotorController::motorStatesChanged,
             this, [motorStatusLights, motorIdEditors](
@@ -882,6 +1003,29 @@ MainWindow::MainWindow(QWidget *parent)
         QFrame#motorStatusLight[motorState="2"] {
             background: #ef4f5f;
             border: 1px solid #ff9ca6;
+        }
+        QLabel#pollBenchmarkLabel {
+            color: #aebac7;
+            font-size: 9px;
+            font-weight: 600;
+        }
+        QPushButton#pollActuatorsButton {
+            background: #0f151d;
+            color: #d5dee8;
+            border: 1px solid #3b4b5d;
+            border-radius: 6px;
+            padding: 2px;
+            font-size: 9px;
+            font-weight: 700;
+        }
+        QPushButton#pollActuatorsButton:hover:enabled {
+            background: #1a2633;
+            border-color: #60758c;
+        }
+        QPushButton#pollActuatorsButton[benchmarkRunning="true"] {
+            background: #8b2f39;
+            color: #fff1f2;
+            border-color: #f07480;
         }
         QPushButton#motorConnectButton {
             background: #0f151d;

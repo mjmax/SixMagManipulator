@@ -29,11 +29,22 @@ current application deliberately requests one object.
 ## Actuator communication
 
 The actuator worker in `scr/_motors` communicates with AX-18A motors using
-DYNAMIXEL Protocol 1.0. It scans IDs 0 through 5, acquires present positions on
-a high-priority thread, stores a thread-safe latest snapshot for future control,
-and limits magnet-dial updates to 15 Hz. The Actuators tab provides automatic
-COM-port discovery, a baud-rate selector defaulting to 1,000,000, one
-connect/scan button, and six status lights.
+DYNAMIXEL Protocol 1.0. It scans the six IDs configured for M1 through M6,
+acquires present positions on a high-priority thread, stores a thread-safe latest
+snapshot for future control, and limits magnet-dial updates to 15 Hz. The
+Actuators tab provides automatic COM-port discovery, a baud-rate selector
+defaulting to 1,000,000, one connect/scan button, six status lights, and an
+editable bus-ID field beneath each light. The default IDs are 1 through 6; valid
+IDs are 0 through 253 and must be unique.
+
+Real USB2Dynamixel hardware uses the Qt serial/VCP path with the FTDI latency
+timer set to 1 ms. Run
+`scr/_motors/configure_ftdi_latency.ps1 -PortName COM3` once per PC/adapter.
+Hardware polling starts the next six-motor cycle immediately after the previous
+cycle finishes; the independent GUI angle display remains limited to 15 Hz.
+D2XX is not used. The overlaid **Poll Actuators** button measures 100 complete
+six-motor position-read cycles on the existing worker, shows the running average,
+and reports **Test Failed** if any read fails.
 
 Run `scr/_motors/run_emulator.ps1` to test the same scan and acquisition path
 without hardware, then select **Simulator (localhost)** before connecting. The

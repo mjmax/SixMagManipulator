@@ -37,19 +37,24 @@ public slots:
     void connectEndpoint(const QString &endpoint, int baudRate,
                          const QVector<int> &motorIds);
     void disconnectEndpoint();
+    void startPollBenchmark(int cycleCount = 100);
 
 signals:
     void connectionStateChanged(int state, const QString &message);
     void motorStatesChanged(const QVector<int> &states);
     void guiAnglesReady(const QVector<double> &angles);
+    void pollBenchmarkProgress(double averageMilliseconds,
+                               int completedCycles, int totalCycles);
+    void pollBenchmarkFinished(double averageMilliseconds);
+    void pollBenchmarkFailed(const QString &message);
 
     void connectRequested(const QString &endpoint, int baudRate,
                           const QVector<int> &motorIds);
     void disconnectRequested();
+    void pollBenchmarkRequested(int cycleCount);
 
 private:
     QThread *m_workerThread = nullptr;
     MotorWorker *m_worker = nullptr;
     std::shared_ptr<MotorStateStore> m_stateStore;
 };
-
