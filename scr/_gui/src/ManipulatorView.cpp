@@ -5,14 +5,20 @@
 #include <QCameraDevice>
 #include <QCameraFormat>
 #include <QFontMetrics>
+#include <QHBoxLayout>
 #include <QLinearGradient>
 #include <QMediaDevices>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPaintEvent>
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QRadialGradient>
+#include <QSettings>
+#include <QSignalBlocker>
+#include <QSpinBox>
+#include <QUrl>
 #include <QVideoFrame>
 
 #include <algorithm>
@@ -44,6 +50,8 @@ ManipulatorView::ManipulatorView(QWidget *parent)
     setObjectName("manipulatorView");
     setMinimumSize(620, 580);
     setAttribute(Qt::WA_OpaquePaintEvent);
+    setMouseTracking(true);
+    setContextMenuPolicy(Qt::PreventContextMenu);
 
     m_traceOverlay = QImage(traceOverlaySize, traceOverlaySize,
                             QImage::Format_ARGB32_Premultiplied);
@@ -75,6 +83,100 @@ ManipulatorView::ManipulatorView(QWidget *parent)
     connect(m_clearTraceButton, &QPushButton::clicked,
             this, &ManipulatorView::clearTrace);
 
+    m_viewControls = new QWidget(this);
+    m_viewControls->setObjectName("workspaceViewControls");
+    auto *viewControlsLayout = new QHBoxLayout(m_viewControls);
+    viewControlsLayout->setContentsMargins(0, 0, 0, 0);
+    viewControlsLayout->setSpacing(3);
+
+    m_panLockButton = new QPushButton(QStringLiteral("🔒"), m_viewControls);
+    auto *zoomInButton = new QPushButton(QStringLiteral("+"), m_viewControls);
+    m_zoomEditor = new QSpinBox(m_viewControls);
+    auto *zoomOutButton = new QPushButton(QStringLiteral("−"), m_viewControls);
+    const QList<QPushButton *> viewButtons = {
+        m_panLockButton, zoomInButton, zoomOutButton
+    };
+    for (QPushButton *button : viewButtons) {
+        button->setFixedSize(28, 28);
+        button->setFocusPolicy(Qt::NoFocus);
+    }
+    m_panLockButton->setCheckable(true);
+    m_panLockButton->setToolTip(
+        "Unlock to pan the camera image with the left mouse button");
+    zoomInButton->setToolTip("Zoom in by 10%");
+    zoomOutButton->setToolTip("Zoom out by 10%");
+
+    m_zoomEditor->setRange(25, 400);
+    m_zoomEditor->setValue(100);
+    m_zoomEditor->setSingleStep(10);
+    m_zoomEditor->setSuffix("%");
+    m_zoomEditor->setAlignment(Qt::AlignCenter);
+    m_zoomEditor->setButtonSymbols(QAbstractSpinBox::NoButtons);
+    m_zoomEditor->setKeyboardTracking(false);
+    m_zoomEditor->setFixedSize(62, 28);
+    m_zoomEditor->setToolTip("Visible camera-image zoom");
+    zoomInButton->setEnabled(false);
+    m_zoomEditor->setEnabled(false);
+    zoomOutButton->setEnabled(false);
+
+    viewControlsLayout->addWidget(m_panLockButton);
+    viewControlsLayout->addWidget(zoomInButton);
+    viewControlsLayout->addWidget(m_zoomEditor);
+    viewControlsLayout->addWidget(zoomOutButton);
+    m_viewControls->adjustSize();
+    m_viewControls->setStyleSheet(R"(
+        QWidget#workspaceViewControls QPushButton,
+        QWidget#workspaceViewControls QSpinBox {
+            background: rgba(19, 28, 38, 238);
+            color: #eef3f8;
+            border: 1px solid #53677d;
+            border-radius: 5px;
+            font-size: 12px;
+            font-weight: 700;
+        }
+        QWidget#workspaceViewControls QPushButton:hover {
+            background: rgba(45, 65, 85, 245);
+            border-color: #7d9bbc;
+        }
+        QWidget#workspaceViewControls QPushButton:pressed,
+        QWidget#workspaceViewControls QPushButton:checked {
+            background: #237a50;
+            border-color: #58d99a;
+        }
+        QWidget#workspaceViewControls QSpinBox {
+            padding: 0 4px;
+            selection-background-color: #315a78;
+        }
+    )");
+
+    connect(m_panLockButton, &QPushButton::toggled,
+            this, [this, zoomInButton, zoomOutButton](bool unlocked) {
+        m_panUnlocked = unlocked;
+        m_panningImage = false;
+        zoomInButton->setEnabled(unlocked);
+        m_zoomEditor->setEnabled(unlocked);
+        zoomOutButton->setEnabled(unlocked);
+        m_panLockButton->setText(
+            unlocked ? QStringLiteral("🔓") : QStringLiteral("🔒"));
+        unsetCursor();
+    });
+    connect(zoomInButton, &QPushButton::clicked,
+            this, [this] {
+        m_zoomEditor->setValue(m_zoomEditor->value() + 10);
+    });
+    connect(zoomOutButton, &QPushButton::clicked,
+            this, [this] {
+        m_zoomEditor->setValue(m_zoomEditor->value() - 10);
+    });
+    connect(m_zoomEditor, qOverload<int>(&QSpinBox::valueChanged),
+            this, [this](int value) {
+        m_imageZoomPercent = value;
+        clampImagePan();
+        saveCameraViewSettings();
+        update();
+    });
+
+    loadCameraViewSettings(QStringLiteral("webcam:default"));
     m_cameraClock.start();
     m_imageTracker = new ImageTracker(this);
     connect(m_imageTracker, &ImageTracker::visualizationResultReady,
@@ -263,8 +365,10 @@ void ManipulatorView::setCameraSource(const QString &sourceId)
     if (m_shutdownComplete)
         return;
 
+    saveCameraViewSettings();
     stopCameraSource();
     m_latestDisplayFrame = {};
+    loadCameraViewSettings(sourceId);
     m_objectDetected = false;
     m_lastVimbaDisplayNanoseconds.store(0, std::memory_order_release);
     update();
@@ -291,6 +395,7 @@ void ManipulatorView::shutdown()
         return;
     m_shutdownComplete = true;
 
+    saveCameraViewSettings();
     disconnect(&m_videoSink, &QVideoSink::videoFrameChanged,
                this, &ManipulatorView::receiveVideoFrame);
     stopCameraSource();
@@ -337,6 +442,7 @@ void ManipulatorView::receiveVideoFrame(const QVideoFrame &frame)
     if (!m_displayFrameClock.isValid()
         || m_displayFrameClock.elapsed() >= displayInterval) {
         m_latestDisplayFrame = image;
+        clampImagePan();
         m_displayFrameClock.restart();
         update();
     }
@@ -357,6 +463,7 @@ void ManipulatorView::receiveVimbaFrame(const QImage &image,
     }
     QMetaObject::invokeMethod(this, [this, image] {
         m_latestDisplayFrame = image;
+        clampImagePan();
         update();
     }, Qt::QueuedConnection);
 }
@@ -459,6 +566,156 @@ void ManipulatorView::paintEvent(QPaintEvent *event)
     drawManipulator(painter, rect().adjusted(18, 18, -18, -18));
 }
 
+QRectF ManipulatorView::workspaceCircleRect() const
+{
+    const QRectF area = rect().adjusted(18, 18, -18, -18);
+    const double designSize = std::min(
+        std::min(area.width(), area.height()), 680.0);
+    const QPointF center(area.left() + designSize * 0.50,
+                         area.top() + designSize * 0.50);
+    const double radius = designSize * 0.285;
+    return QRectF(center.x() - radius, center.y() - radius,
+                  radius * 2.0, radius * 2.0);
+}
+
+void ManipulatorView::loadCameraViewSettings(const QString &sourceId)
+{
+    m_currentCameraSourceId = sourceId;
+    const QString sourceKey = QString::fromLatin1(
+        QUrl::toPercentEncoding(sourceId));
+    QSettings settings;
+    settings.beginGroup(QStringLiteral("cameraView/%1").arg(sourceKey));
+    const int zoom = std::clamp(
+        settings.value(QStringLiteral("zoomPercent"), 100).toInt(),
+        25, 400);
+    const double panX =
+        settings.value(QStringLiteral("panX"), 0.0).toDouble();
+    const double panY =
+        settings.value(QStringLiteral("panY"), 0.0).toDouble();
+    settings.endGroup();
+
+    m_imageZoomPercent = zoom;
+    m_imagePanNormalized = {
+        std::isfinite(panX) ? panX : 0.0,
+        std::isfinite(panY) ? panY : 0.0
+    };
+    if (m_zoomEditor) {
+        QSignalBlocker blocker(m_zoomEditor);
+        m_zoomEditor->setValue(zoom);
+    }
+}
+
+void ManipulatorView::saveCameraViewSettings() const
+{
+    if (m_currentCameraSourceId.isEmpty())
+        return;
+
+    const QString sourceKey = QString::fromLatin1(
+        QUrl::toPercentEncoding(m_currentCameraSourceId));
+    QSettings settings;
+    settings.beginGroup(QStringLiteral("cameraView/%1").arg(sourceKey));
+    settings.setValue(QStringLiteral("zoomPercent"), m_imageZoomPercent);
+    settings.setValue(QStringLiteral("panX"), m_imagePanNormalized.x());
+    settings.setValue(QStringLiteral("panY"), m_imagePanNormalized.y());
+    settings.endGroup();
+}
+
+void ManipulatorView::clampImagePan()
+{
+    if (m_latestDisplayFrame.isNull())
+        return;
+
+    const QRectF circle = workspaceCircleRect();
+    const double diameter = circle.width();
+    if (diameter <= 0.0)
+        return;
+
+    const double zoom = m_imageZoomPercent / 100.0;
+    const double sourceMinimum = std::min(
+        m_latestDisplayFrame.width(), m_latestDisplayFrame.height());
+    const double scale = diameter / sourceMinimum * zoom;
+    const double imageWidth = m_latestDisplayFrame.width() * scale;
+    const double imageHeight = m_latestDisplayFrame.height() * scale;
+    const double normalization = diameter * zoom;
+    const double maximumX = std::max(0.0, (imageWidth - diameter) * 0.5)
+        / normalization;
+    const double maximumY = std::max(0.0, (imageHeight - diameter) * 0.5)
+        / normalization;
+    m_imagePanNormalized.setX(std::clamp(
+        m_imagePanNormalized.x(), -maximumX, maximumX));
+    m_imagePanNormalized.setY(std::clamp(
+        m_imagePanNormalized.y(), -maximumY, maximumY));
+}
+
+void ManipulatorView::mousePressEvent(QMouseEvent *event)
+{
+    if (m_panUnlocked && event->button() == Qt::LeftButton
+        && workspaceCircleRect().contains(event->position())) {
+        m_panningImage = true;
+        m_lastPanMousePosition = event->position();
+        grabMouse(Qt::ClosedHandCursor);
+        event->accept();
+        return;
+    }
+    QWidget::mousePressEvent(event);
+}
+
+void ManipulatorView::mouseMoveEvent(QMouseEvent *event)
+{
+    const QRectF circle = workspaceCircleRect();
+    if (m_panUnlocked && !m_panningImage
+        && (event->buttons() & Qt::LeftButton)
+        && circle.contains(event->position())) {
+        m_panningImage = true;
+        m_lastPanMousePosition = event->position();
+        grabMouse(Qt::ClosedHandCursor);
+        event->accept();
+        return;
+    }
+
+    if (m_panningImage) {
+        if (!(event->buttons() & Qt::LeftButton)) {
+            m_panningImage = false;
+            releaseMouse();
+            unsetCursor();
+            event->accept();
+            return;
+        }
+        const QPointF delta = event->position() - m_lastPanMousePosition;
+        m_lastPanMousePosition = event->position();
+        const double normalization = std::max(
+            1.0, circle.width() * m_imageZoomPercent / 100.0);
+        m_imagePanNormalized += delta / normalization;
+        clampImagePan();
+        update();
+        event->accept();
+        return;
+    }
+
+    unsetCursor();
+    QWidget::mouseMoveEvent(event);
+}
+
+void ManipulatorView::mouseReleaseEvent(QMouseEvent *event)
+{
+    if (m_panningImage && event->button() == Qt::LeftButton) {
+        m_panningImage = false;
+        releaseMouse();
+        unsetCursor();
+        saveCameraViewSettings();
+        event->accept();
+        return;
+    }
+    QWidget::mouseReleaseEvent(event);
+}
+
+void ManipulatorView::leaveEvent(QEvent *event)
+{
+    if (!m_panningImage)
+        unsetCursor();
+    QWidget::leaveEvent(event);
+}
+
 void ManipulatorView::resizeEvent(QResizeEvent *event)
 {
     QWidget::resizeEvent(event);
@@ -467,6 +724,11 @@ void ManipulatorView::resizeEvent(QResizeEvent *event)
         std::max(margin, width() - m_clearTraceButton->width() - margin),
         margin);
     m_clearTraceButton->raise();
+    m_viewControls->move(
+        std::max(margin, width() - m_viewControls->width() - margin),
+        std::max(margin, height() - m_viewControls->height() - margin));
+    m_viewControls->raise();
+    clampImagePan();
 }
 
 void ManipulatorView::drawManipulator(QPainter &painter, const QRectF &area)
@@ -550,16 +812,34 @@ void ManipulatorView::drawWorkspace(QPainter &painter,
     QPainterPath circularClip;
     circularClip.addEllipse(circle);
     painter.setClipPath(circularClip);
+    QRectF cameraSquareTarget = circle;
     if (!m_latestDisplayFrame.isNull()) {
         const int sourceSide = std::min(
             m_latestDisplayFrame.width(), m_latestDisplayFrame.height());
-        const QRectF source(
-            (m_latestDisplayFrame.width() - sourceSide) * 0.5,
-            (m_latestDisplayFrame.height() - sourceSide) * 0.5,
-            sourceSide,
-            sourceSide);
+        const double zoom = m_imageZoomPercent / 100.0;
+        const double scale = circle.width() / sourceSide * zoom;
+        const QSizeF imageSize(
+            m_latestDisplayFrame.width() * scale,
+            m_latestDisplayFrame.height() * scale);
+        const QPointF panOffset = m_imagePanNormalized
+            * (circle.width() * zoom);
+        const QRectF imageTarget(
+            center.x() - imageSize.width() * 0.5 + panOffset.x(),
+            center.y() - imageSize.height() * 0.5 + panOffset.y(),
+            imageSize.width(), imageSize.height());
+        const double cropX =
+            (m_latestDisplayFrame.width() - sourceSide) * 0.5;
+        const double cropY =
+            (m_latestDisplayFrame.height() - sourceSide) * 0.5;
+        cameraSquareTarget = QRectF(
+            imageTarget.left() + cropX * scale,
+            imageTarget.top() + cropY * scale,
+            sourceSide * scale,
+            sourceSide * scale);
+
+        painter.fillRect(circle, QColor("#05080c"));
         painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
-        painter.drawImage(circle, m_latestDisplayFrame, source);
+        painter.drawImage(imageTarget, m_latestDisplayFrame);
     } else {
         QRadialGradient glass(center - QPointF(radius * 0.25, radius * 0.3),
                               radius * 1.25);
@@ -570,14 +850,16 @@ void ManipulatorView::drawWorkspace(QPainter &painter,
     }
 
     if (!m_traceOverlay.isNull())
-        painter.drawImage(circle, m_traceOverlay);
+        painter.drawImage(cameraSquareTarget, m_traceOverlay);
 
     if (m_objectDetected) {
         const QPointF marker(
-            circle.left() + m_objectPosition.x() * circle.width(),
-            circle.top() + m_objectPosition.y() * circle.height());
+            cameraSquareTarget.left()
+                + m_objectPosition.x() * cameraSquareTarget.width(),
+            cameraSquareTarget.top()
+                + m_objectPosition.y() * cameraSquareTarget.height());
         const double markerRadius = std::max(
-            4.0, m_objectRadius * circle.width());
+            4.0, m_objectRadius * cameraSquareTarget.width());
         painter.setBrush(Qt::NoBrush);
         painter.setPen(QPen(QColor("#58f0a4"), 2.0));
         painter.drawEllipse(marker, markerRadius + 3.0, markerRadius + 3.0);

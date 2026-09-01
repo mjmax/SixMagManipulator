@@ -70,6 +70,11 @@ emulator is automatically terminated when the main GUI closes.
 - Trace color palette
 - Typed or arrow-adjustable trace line width
 
+The compact workspace controls provide lock/unlock, 10% zoom steps, an
+editable zoom percentage, and left-button image panning while unlocked. The
+default view is centered at 100%. Zoom and pan are saved independently for
+each camera source and restored after source changes or application restarts.
+
 ## Build and run
 
 Qt 6.8.3, Qt Multimedia, Qt SerialPort, CMake, Ninja, and the matching MinGW

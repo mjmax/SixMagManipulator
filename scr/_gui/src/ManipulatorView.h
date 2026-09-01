@@ -15,9 +15,12 @@
 #include <atomic>
 
 class QCamera;
+class QEvent;
+class QMouseEvent;
 class QPainter;
 class QPushButton;
 class QResizeEvent;
+class QSpinBox;
 
 class ManipulatorView final : public QWidget
 {
@@ -72,6 +75,10 @@ signals:
     void cameraSourceError(const QString &message);
 
 protected:
+    void leaveEvent(QEvent *event) override;
+    void mouseMoveEvent(QMouseEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
+    void mouseReleaseEvent(QMouseEvent *event) override;
     void paintEvent(QPaintEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
 
@@ -85,6 +92,10 @@ private:
     void stopCameraSource();
     void applyImageProcessingSettings(const ImageProcessingSettings &settings);
     void appendTraceDot(const QPointF &normalizedPosition);
+    void clampImagePan();
+    void loadCameraViewSettings(const QString &sourceId);
+    void saveCameraViewSettings() const;
+    QRectF workspaceCircleRect() const;
     void drawManipulator(QPainter &painter, const QRectF &area);
     void drawWorkspace(QPainter &painter, const QPointF &center, double radius);
     void drawMagnet(
@@ -105,6 +116,9 @@ private:
     QVideoSink m_videoSink;
     ImageTracker *m_imageTracker = nullptr;
     QPushButton *m_clearTraceButton = nullptr;
+    QWidget *m_viewControls = nullptr;
+    QPushButton *m_panLockButton = nullptr;
+    QSpinBox *m_zoomEditor = nullptr;
     QElapsedTimer m_cameraClock;
     QElapsedTimer m_displayFrameClock;
     std::atomic_int m_visualizationRateHz{15};
@@ -117,8 +131,14 @@ private:
     double m_traceWidth = 2.5;
     int m_maximumTraceDots = 16;
     bool m_traceEnabled = false;
+    bool m_panUnlocked = false;
+    bool m_panningImage = false;
     bool m_shutdownComplete = false;
     bool m_objectDetected = false;
     QPointF m_objectPosition;
+    QPointF m_imagePanNormalized;
+    QPointF m_lastPanMousePosition;
+    QString m_currentCameraSourceId;
     double m_objectRadius = 0.0;
+    int m_imageZoomPercent = 100;
 };
