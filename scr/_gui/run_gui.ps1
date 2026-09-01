@@ -9,6 +9,8 @@ $GuiDirectory = [System.IO.Path]::GetFullPath($PSScriptRoot)
 $BuildDirectory = Join-Path $GuiDirectory "build"
 $Executable = Join-Path $BuildDirectory "SixMagManipulatorGui.exe"
 $BuildScript = Join-Path $GuiDirectory "build_gui.ps1"
+$ProjectRoot = [System.IO.Path]::GetFullPath((Join-Path $GuiDirectory "..\.."))
+$VimbaTransportPath = Join-Path $ProjectRoot "utilities\AlliedVision\VimbaX\cti"
 
 $NeedsBuild = $Rebuild -or -not (Test-Path -LiteralPath $Executable -PathType Leaf)
 
@@ -25,6 +27,12 @@ if (-not $NeedsBuild) {
     $BuildInputs += Get-ChildItem -LiteralPath $MotorDirectory -File -Recurse |
         Where-Object { $_.Extension -in ".cpp", ".h" } |
         Select-Object -ExpandProperty FullName
+    $ImageProcessingDirectory = [System.IO.Path]::GetFullPath(
+        (Join-Path $GuiDirectory "..\_imgproc")
+    )
+    $BuildInputs += Get-ChildItem -LiteralPath $ImageProcessingDirectory -File -Recurse |
+        Where-Object { $_.Extension -in ".cpp", ".h" } |
+        Select-Object -ExpandProperty FullName
 
     $NeedsBuild = $null -ne ($BuildInputs | Where-Object {
         (Get-Item -LiteralPath $_).LastWriteTimeUtc -gt $ExecutableTime
@@ -39,6 +47,10 @@ if ($NeedsBuild) {
 if (-not (Test-Path -LiteralPath $Executable -PathType Leaf)) {
     throw "The GUI executable was not created at '$Executable'."
 }
+if (-not (Test-Path -LiteralPath $VimbaTransportPath -PathType Container)) {
+    throw "The Vimba X transport layer is missing at '$VimbaTransportPath'. See README.md."
+}
+$env:GENICAM_GENTL64_PATH = $VimbaTransportPath
 
 # Use the build folder as the working directory so Qt can always locate its
 # deployed plugins and multimedia libraries. Start-Process returns the prompt
@@ -49,4 +61,3 @@ $Process = Start-Process `
     -PassThru
 
 Write-Host "GUI started (process ID $($Process.Id))." -ForegroundColor Green
-

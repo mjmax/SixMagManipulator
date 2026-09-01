@@ -3,6 +3,7 @@
 
 #include <QCamera>
 #include <QCameraDevice>
+#include <QCameraFormat>
 #include <QFontMetrics>
 #include <QLinearGradient>
 #include <QMediaDevices>
@@ -88,10 +89,7 @@ ManipulatorView::ManipulatorView(QWidget *parent)
 
 ManipulatorView::~ManipulatorView()
 {
-    if (m_camera)
-        m_camera->stop();
-    if (m_imageTracker)
-        m_imageTracker->stop();
+    shutdown();
 }
 
 QSize ManipulatorView::sizeHint() const
@@ -212,7 +210,9 @@ void ManipulatorView::applyImageProcessingSettings(
     const ImageProcessingSettings &settings)
 {
     m_imageTracker->setSettings(settings);
-    m_visualizationRateHz = m_imageTracker->settings().visualizationRateHz;
+    m_visualizationRateHz.store(
+        m_imageTracker->settings().visualizationRateHz,
+        std::memory_order_release);
 }
 
 void ManipulatorView::startDefaultCamera()
@@ -221,9 +221,105 @@ void ManipulatorView::startDefaultCamera()
     if (device.isNull())
         return;
     m_camera = new QCamera(device, this);
+    QCameraFormat fastestFormat;
+    for (const QCameraFormat &format : device.videoFormats()) {
+        const bool faster = format.maxFrameRate() > fastestFormat.maxFrameRate();
+        const bool sameRateHigherResolution =
+            qFuzzyCompare(format.maxFrameRate(), fastestFormat.maxFrameRate())
+            && format.resolution().width() * format.resolution().height()
+                > fastestFormat.resolution().width() * fastestFormat.resolution().height();
+        if (fastestFormat.isNull() || faster || sameRateHigherResolution)
+            fastestFormat = format;
+    }
+    if (!fastestFormat.isNull())
+        m_camera->setCameraFormat(fastestFormat);
     m_captureSession.setCamera(m_camera);
     m_captureSession.setVideoSink(&m_videoSink);
     m_camera->start();
+}
+
+QVector<VimbaCameraDescriptor> ManipulatorView::availableVimbaCameras() const
+{
+    return VimbaCameraSource::availableCameras();
+}
+
+void ManipulatorView::stopCameraSource()
+{
+    if (m_camera) {
+        m_camera->stop();
+        m_captureSession.setCamera(nullptr);
+        delete m_camera;
+        m_camera = nullptr;
+    }
+    if (m_vimbaCamera) {
+        m_vimbaCamera->stop();
+        delete m_vimbaCamera;
+        m_vimbaCamera = nullptr;
+    }
+}
+
+void ManipulatorView::setCameraSource(const QString &sourceId)
+{
+    if (m_shutdownComplete)
+        return;
+
+    stopCameraSource();
+    m_latestDisplayFrame = {};
+    m_objectDetected = false;
+    m_lastVimbaDisplayNanoseconds.store(0, std::memory_order_release);
+    update();
+
+    if (!sourceId.startsWith(QStringLiteral("vimba:"))) {
+        startDefaultCamera();
+        return;
+    }
+
+    m_vimbaCamera = new VimbaCameraSource(sourceId.mid(6), this);
+    connect(m_vimbaCamera, &VimbaCameraSource::frameReady,
+            this, &ManipulatorView::receiveVimbaFrame,
+            Qt::DirectConnection);
+    connect(m_vimbaCamera, &VimbaCameraSource::controlsReady,
+            this, &ManipulatorView::cameraControlsReady);
+    connect(m_vimbaCamera, &VimbaCameraSource::sourceError,
+            this, &ManipulatorView::cameraSourceError);
+    m_vimbaCamera->start(QThread::TimeCriticalPriority);
+}
+
+void ManipulatorView::shutdown()
+{
+    if (m_shutdownComplete)
+        return;
+    m_shutdownComplete = true;
+
+    disconnect(&m_videoSink, &QVideoSink::videoFrameChanged,
+               this, &ManipulatorView::receiveVideoFrame);
+    stopCameraSource();
+    if (m_imageTracker)
+        m_imageTracker->stop();
+}
+
+void ManipulatorView::setCameraExposure(double value)
+{
+    if (m_vimbaCamera)
+        m_vimbaCamera->setExposureTime(value);
+}
+
+void ManipulatorView::setCameraGain(double value)
+{
+    if (m_vimbaCamera)
+        m_vimbaCamera->setGain(value);
+}
+
+void ManipulatorView::setCameraBlackLevel(double value)
+{
+    if (m_vimbaCamera)
+        m_vimbaCamera->setBlackLevel(value);
+}
+
+void ManipulatorView::setCameraGamma(double value)
+{
+    if (m_vimbaCamera)
+        m_vimbaCamera->setGamma(value);
 }
 
 void ManipulatorView::receiveVideoFrame(const QVideoFrame &frame)
@@ -236,13 +332,33 @@ void ManipulatorView::receiveVideoFrame(const QVideoFrame &frame)
     // retained by the GUI, and QImage implicit sharing avoids a second pixel copy.
     m_imageTracker->submitFrame(image, m_cameraClock.nsecsElapsed());
 
-    const int displayInterval = std::max(1, 1000 / m_visualizationRateHz);
+    const int displayInterval = std::max(
+        1, 1000 / m_visualizationRateHz.load(std::memory_order_acquire));
     if (!m_displayFrameClock.isValid()
         || m_displayFrameClock.elapsed() >= displayInterval) {
         m_latestDisplayFrame = image;
         m_displayFrameClock.restart();
         update();
     }
+}
+
+void ManipulatorView::receiveVimbaFrame(const QImage &image,
+                                        qint64 timestampNanoseconds)
+{
+    m_imageTracker->submitFrame(image, timestampNanoseconds);
+
+    const qint64 interval = 1000000000LL / std::max(
+        1, m_visualizationRateHz.load(std::memory_order_acquire));
+    qint64 previous = m_lastVimbaDisplayNanoseconds.load(std::memory_order_acquire);
+    if (timestampNanoseconds - previous < interval
+        || !m_lastVimbaDisplayNanoseconds.compare_exchange_strong(
+            previous, timestampNanoseconds, std::memory_order_acq_rel)) {
+        return;
+    }
+    QMetaObject::invokeMethod(this, [this, image] {
+        m_latestDisplayFrame = image;
+        update();
+    }, Qt::QueuedConnection);
 }
 
 void ManipulatorView::receiveTrackingVisualization(const TrackingResult &result)
@@ -300,7 +416,8 @@ void ManipulatorView::appendTraceDot(const QPointF &normalizedPosition)
                 * (m_traceOverlay.height() - 1));
 
         const double refreshScale = std::clamp(
-            static_cast<double>(m_visualizationRateHz) / 30.0,
+            static_cast<double>(
+                m_visualizationRateHz.load(std::memory_order_acquire)) / 30.0,
             0.5, 2.0);
         const double targetSpacing = std::max(
             1.0, overlayDiameter * refreshScale);
@@ -569,4 +686,3 @@ void ManipulatorView::drawMagnet(QPainter &painter,
     painter.drawText(labelRect, Qt::AlignCenter, angleText);
     painter.restore();
 }
-

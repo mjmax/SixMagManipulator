@@ -179,6 +179,55 @@ private:
     QPointer<QWidget> m_parent;
 };
 
+class TopRightOverlay final : public QObject
+{
+public:
+    TopRightOverlay(QWidget *overlay, QWidget *parent)
+        : QObject(overlay),
+          m_overlay(overlay),
+          m_parent(parent)
+    {
+        m_parent->installEventFilter(this);
+        m_overlay->installEventFilter(this);
+        schedulePosition();
+    }
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if ((watched == m_parent || watched == m_overlay)
+            && (event->type() == QEvent::Show
+                || event->type() == QEvent::Move
+                || event->type() == QEvent::Resize
+                || event->type() == QEvent::LayoutRequest)) {
+            schedulePosition();
+        }
+        return QObject::eventFilter(watched, event);
+    }
+
+private:
+    void schedulePosition()
+    {
+        QTimer::singleShot(0, this, [this] {
+            if (!m_overlay || !m_parent)
+                return;
+            if (m_overlay->layout())
+                m_overlay->layout()->activate();
+            m_overlay->adjustSize();
+            const int rightMargin = 10;
+            const int topMargin = 8;
+            m_overlay->move(
+                std::max(0, m_parent->width()
+                    - m_overlay->width() - rightMargin),
+                topMargin);
+            m_overlay->raise();
+        });
+    }
+
+    QPointer<QWidget> m_overlay;
+    QPointer<QWidget> m_parent;
+};
+
 class PortComboBox final : public QComboBox
 {
 public:
@@ -570,6 +619,36 @@ MainWindow::MainWindow(QWidget *parent)
     maximumArea->setValue(20000);
     maximumArea->setSuffix(" px²");
 
+    auto *cameraSource = new QComboBox;
+    cameraSource->addItem("Webcam", QStringLiteral("webcam:default"));
+    for (const VimbaCameraDescriptor &camera
+         : m_manipulatorView->availableVimbaCameras()) {
+        cameraSource->addItem(
+            camera.displayName, QStringLiteral("vimba:") + camera.id);
+    }
+    cameraSource->setToolTip(
+        "Acquisition runs at the selected camera's highest rate; "
+        "GUI refresh remains independently limited");
+    new ComboArrowOverlay(cameraSource);
+
+    auto *cameraExposure = new QDoubleSpinBox;
+    cameraExposure->setDecimals(1);
+    cameraExposure->setSuffix(" µs");
+    auto *cameraGain = new QDoubleSpinBox;
+    cameraGain->setDecimals(2);
+    cameraGain->setSuffix(" dB");
+    auto *cameraBlackLevel = new QDoubleSpinBox;
+    cameraBlackLevel->setDecimals(2);
+    auto *cameraGamma = new QDoubleSpinBox;
+    cameraGamma->setDecimals(3);
+    const QVector<QDoubleSpinBox *> cameraFeatureEditors = {
+        cameraExposure, cameraGain, cameraBlackLevel, cameraGamma
+    };
+    for (QDoubleSpinBox *editor : cameraFeatureEditors) {
+        editor->setRange(0.0, 0.0);
+        editor->setEnabled(false);
+    }
+
     auto *minimumCircularity = new QDoubleSpinBox;
     minimumCircularity->setRange(0.05, 1.0);
     minimumCircularity->setDecimals(2);
@@ -621,7 +700,11 @@ MainWindow::MainWindow(QWidget *parent)
         minimumCircularity,
         visualizationRate,
         traceWidth,
-        maximumTraceDots
+        maximumTraceDots,
+        cameraExposure,
+        cameraGain,
+        cameraBlackLevel,
+        cameraGamma
     };
     for (QWidget *spinBox : spinBoxes)
         new SpinArrowOverlay(spinBox);
@@ -638,6 +721,10 @@ MainWindow::MainWindow(QWidget *parent)
     traceWidth->setFixedWidth(processingFieldWidth);
     maximumTraceDots->setFixedWidth(processingFieldWidth);
     traceToggle->setFixedSize(processingFieldWidth, 28);
+    constexpr int cameraFieldWidth = 142;
+    cameraSource->setFixedWidth(cameraFieldWidth);
+    for (QDoubleSpinBox *editor : cameraFeatureEditors)
+        editor->setFixedWidth(cameraFieldWidth);
 
     const auto addProcessingControl =
         [form](int groupRow, int column, QLabel *label, QWidget *field) {
@@ -655,6 +742,28 @@ MainWindow::MainWindow(QWidget *parent)
     addProcessingControl(3, 0, makeFieldLabel("Trace line width"), traceWidth);
     form->addWidget(traceToggle, 7, 1, Qt::AlignLeft | Qt::AlignTop);
     addProcessingControl(4, 0, makeFieldLabel("Max Trace Dots"), maximumTraceDots);
+    // Keep the camera group independent of the left-side rows so its controls
+    // stay compact. Anchoring at row 2 makes the source field line up exactly
+    // with the Maximum object area field in row 3.
+    auto *cameraControls = new QWidget(imageProcessingTab);
+    auto *cameraControlsLayout = new QGridLayout(cameraControls);
+    cameraControlsLayout->setContentsMargins(0, 0, 0, 0);
+    cameraControlsLayout->setHorizontalSpacing(0);
+    cameraControlsLayout->setVerticalSpacing(3);
+    const auto addCameraControl =
+        [cameraControlsLayout](int groupRow, QLabel *label, QWidget *field) {
+            const int labelRow = groupRow * 2;
+            cameraControlsLayout->addWidget(
+                label, labelRow, 0, Qt::AlignLeft | Qt::AlignBottom);
+            cameraControlsLayout->addWidget(
+                field, labelRow + 1, 0, Qt::AlignLeft | Qt::AlignTop);
+        };
+    addCameraControl(0, makeFieldLabel("Camera source"), cameraSource);
+    addCameraControl(1, makeFieldLabel("Exposure time"), cameraExposure);
+    addCameraControl(2, makeFieldLabel("Gain"), cameraGain);
+    addCameraControl(3, makeFieldLabel("Black level"), cameraBlackLevel);
+    addCameraControl(4, makeFieldLabel("Gamma"), cameraGamma);
+    new TopRightOverlay(cameraControls, imageProcessingTab);
     form->setColumnStretch(2, 1);
     imageLayout->addLayout(form);
 
@@ -833,6 +942,57 @@ MainWindow::MainWindow(QWidget *parent)
             m_manipulatorView, &ManipulatorView::setTraceWidth);
     connect(maximumTraceDots, qOverload<int>(&QSpinBox::valueChanged),
             m_manipulatorView, &ManipulatorView::setMaximumTraceDots);
+    connect(cameraSource, qOverload<int>(&QComboBox::currentIndexChanged),
+            this, [this, cameraSource, cameraFeatureEditors](int index) {
+        const QString sourceId = cameraSource->itemData(index).toString();
+        const bool isVimba = sourceId.startsWith(QStringLiteral("vimba:"));
+        for (QDoubleSpinBox *editor : cameraFeatureEditors)
+            editor->setEnabled(false);
+        m_manipulatorView->setCameraSource(sourceId);
+        if (!isVimba)
+            cameraSource->setToolTip("Default webcam at its fastest available format");
+    });
+    connect(cameraExposure, qOverload<double>(&QDoubleSpinBox::valueChanged),
+            m_manipulatorView, &ManipulatorView::setCameraExposure);
+    connect(cameraGain, qOverload<double>(&QDoubleSpinBox::valueChanged),
+            m_manipulatorView, &ManipulatorView::setCameraGain);
+    connect(cameraBlackLevel, qOverload<double>(&QDoubleSpinBox::valueChanged),
+            m_manipulatorView, &ManipulatorView::setCameraBlackLevel);
+    connect(cameraGamma, qOverload<double>(&QDoubleSpinBox::valueChanged),
+            m_manipulatorView, &ManipulatorView::setCameraGamma);
+    connect(m_manipulatorView, &ManipulatorView::cameraControlsReady,
+            this, [cameraSource, cameraExposure, cameraGain,
+                   cameraBlackLevel, cameraGamma](
+                      const VimbaFeatureState &exposure,
+                      const VimbaFeatureState &gain,
+                      const VimbaFeatureState &blackLevel,
+                      const VimbaFeatureState &gamma) {
+        const auto applyFeature = [](QDoubleSpinBox *editor,
+                                     const VimbaFeatureState &state,
+                                     bool allowEditing = true) {
+            QSignalBlocker blocker(editor);
+            editor->setEnabled(state.available && allowEditing);
+            if (state.available) {
+                editor->setRange(state.minimum, state.maximum);
+                editor->setValue(state.value);
+                editor->setSingleStep(
+                    std::max(0.001, (state.maximum - state.minimum) / 200.0));
+            }
+        };
+        applyFeature(cameraExposure, exposure, false);
+        cameraExposure->setToolTip(
+            "Fixed at 5000 µs for the Mako camera");
+        applyFeature(cameraGain, gain);
+        applyFeature(cameraBlackLevel, blackLevel);
+        applyFeature(cameraGamma, gamma);
+        cameraSource->setToolTip(
+            "Vimba USB acquisition active at the camera's maximum frame rate");
+    });
+    connect(m_manipulatorView, &ManipulatorView::cameraSourceError,
+            this, [cameraSource](const QString &message) {
+        cameraSource->setToolTip(message);
+        cameraSource->setCurrentIndex(0);
+    });
 
     connect(m_manipulatorView, &ManipulatorView::trackingStatusChanged,
             this,
@@ -1092,10 +1252,26 @@ MainWindow::MainWindow(QWidget *parent)
             background: #1d2b3a;
         }
     )");
+
+    connect(qApp, &QCoreApplication::aboutToQuit,
+            this, &MainWindow::shutdownResources);
 }
 
-void MainWindow::closeEvent(QCloseEvent *event)
+MainWindow::~MainWindow()
 {
+    shutdownResources();
+}
+
+void MainWindow::shutdownResources()
+{
+    if (m_shutdownComplete)
+        return;
+    m_shutdownComplete = true;
+
+    // Stop camera capture and image processing before releasing the motor
+    // worker or any external test process. Each stop waits for its worker.
+    if (m_manipulatorView)
+        m_manipulatorView->shutdown();
     if (m_motorController)
         m_motorController->shutdown();
 
@@ -1110,6 +1286,10 @@ void MainWindow::closeEvent(QCloseEvent *event)
                       {QStringLiteral("-x"),
                        QStringLiteral("SixMagMotorEmulator")});
 #endif
+}
 
+void MainWindow::closeEvent(QCloseEvent *event)
+{
+    shutdownResources();
     QMainWindow::closeEvent(event);
 }
