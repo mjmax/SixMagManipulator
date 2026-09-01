@@ -632,7 +632,9 @@ MainWindow::MainWindow(QWidget *parent)
     new ComboArrowOverlay(cameraSource);
 
     auto *cameraExposure = new QDoubleSpinBox;
+    cameraExposure->setRange(1.0, 1000000.0);
     cameraExposure->setDecimals(1);
+    cameraExposure->setValue(5000.0);
     cameraExposure->setSuffix(" µs");
     auto *cameraGain = new QDoubleSpinBox;
     cameraGain->setDecimals(2);
@@ -645,7 +647,8 @@ MainWindow::MainWindow(QWidget *parent)
         cameraExposure, cameraGain, cameraBlackLevel, cameraGamma
     };
     for (QDoubleSpinBox *editor : cameraFeatureEditors) {
-        editor->setRange(0.0, 0.0);
+        if (editor != cameraExposure)
+            editor->setRange(0.0, 0.0);
         editor->setEnabled(false);
     }
 
@@ -943,14 +946,18 @@ MainWindow::MainWindow(QWidget *parent)
     connect(maximumTraceDots, qOverload<int>(&QSpinBox::valueChanged),
             m_manipulatorView, &ManipulatorView::setMaximumTraceDots);
     connect(cameraSource, qOverload<int>(&QComboBox::currentIndexChanged),
-            this, [this, cameraSource, cameraFeatureEditors](int index) {
+            this, [this, cameraSource, cameraExposure,
+                   cameraFeatureEditors](int index) {
         const QString sourceId = cameraSource->itemData(index).toString();
         const bool isVimba = sourceId.startsWith(QStringLiteral("vimba:"));
         for (QDoubleSpinBox *editor : cameraFeatureEditors)
             editor->setEnabled(false);
         m_manipulatorView->setCameraSource(sourceId);
-        if (!isVimba)
+        if (!isVimba) {
+            QSignalBlocker blocker(cameraExposure);
+            cameraExposure->setValue(5000.0);
             cameraSource->setToolTip("Default webcam at its fastest available format");
+        }
     });
     connect(cameraExposure, qOverload<double>(&QDoubleSpinBox::valueChanged),
             m_manipulatorView, &ManipulatorView::setCameraExposure);
