@@ -1,8 +1,8 @@
 # Six-Magnet Manipulator Software
 
 Desktop software for a six-magnet planar manipulator. The current project
-contains a low-latency webcam sphere tracker and a Qt 6 operator-interface
-prototype.
+contains low-latency webcam and Allied Vision camera acquisition tools, a
+sphere tracker, and a Qt 6 operator-interface prototype.
 
 ## Project layout
 
@@ -79,6 +79,62 @@ Run the hardware-free detector tests with:
 ```powershell
 .\utilities\venv\Scripts\python.exe .\scr\_imgproc\test_tracker.py
 ```
+
+## Configure the Allied Vision Mako U-130B
+
+The Mako U-130B is a USB3 Vision camera. At full 1280 x 1024 resolution with
+`Mono8`, its specified maximum rate is 168 FPS. Windows requires Allied
+Vision's USB camera driver and USB GenTL transport layer; the Python package
+alone cannot communicate with the camera.
+
+1. Connect the camera directly to a USB 3.x port.
+2. Download the current 64-bit **Vimba X for Windows** installer from Allied
+   Vision's official Vimba X download page. Allied Vision requires the user to
+   accept its download terms.
+3. Run the installer and select the smallest installation containing the
+   **USB Transport Layer** and **Allied Vision USB camera driver**. The Viewer,
+   examples, GigE, CSI, and other camera transports are not required by this
+   project. Keep the camera connected during installation so the driver can be
+   assigned automatically. A Windows driver is necessarily system-installed;
+   the project-local Python API remains under `utilities`.
+4. If the automatic driver assignment does not succeed, use the Vimba X Driver
+   Installer or Windows Device Manager to assign the Allied Vision driver to
+   **USB3 Vision Device**, not to **USB Composite Device**.
+5. Reconnect the camera after installation. Reboot Windows if the camera is
+   still not discovered.
+
+Create the minimal, isolated Python acquisition environment:
+
+```powershell
+.\scr\_imgproc\setup_mako.ps1
+```
+
+This creates `utilities/vimba_venv` with 64-bit VmbPy, NumPy, and OpenCV. If a
+different 64-bit Python 3.10+ installation is preferred, pass its full path:
+
+```powershell
+.\scr\_imgproc\setup_mako.ps1 -PythonExecutable "C:\Path\To\python.exe"
+```
+
+Start asynchronous full-resolution acquisition with a 30 FPS preview:
+
+```powershell
+.\scr\_imgproc\run_mako_test.ps1
+```
+
+The preview retains only the newest image and does not limit or queue the
+high-rate acquisition stream. Press **Q** to stop. For an acquisition-only
+measurement without display copies, run:
+
+```powershell
+.\scr\_imgproc\run_mako_test.ps1 --duration 10 --no-display
+```
+
+The test requests 168 FPS, `Mono8`, continuous free-running acquisition, a
+3,000 microsecond exposure, and 32 announced stream buffers. Use
+`--exposure-us`, `--fps`, `--preview-fps`, or `--buffers` to test other values.
+The measured capture rate and incomplete-frame count are reported every second
+and once more at shutdown.
 
 ## Configure low-latency USB2Dynamixel communication
 

@@ -15,6 +15,14 @@ The native real-time tracker is kept in `scr/_imgproc/ImageTracker.h` and
 circular object logic as the Python prototype without starting a Python process
 or copying frames between applications.
 
+The camera selector defaults to the webcam and also lists physical Allied
+Vision cameras discovered through Vimba X. VimbaCameraSource uses the native
+VmbC API with 32 reusable acquisition buffers. The camera and detector run as
+fast as possible; only the workspace image and status updates are limited by
+the **GUI refresh rate**. Selecting a Vimba camera fixes **Exposure time** at
+5000 microseconds and enables its available **Gain**, **Black level**, and
+**Gamma** controls.
+
 The tracker runs on a high-priority worker thread and retains only the newest
 unprocessed camera frame. Detection uses every available frame, while camera,
 marker, status, and trace drawing default to 15 Hz. Detection is restricted to
@@ -56,14 +64,18 @@ emulator is automatically terminated when the main GUI closes.
 - Minimum and maximum object area
 - Minimum circularity
 - GUI-only refresh rate
+- Webcam/Vimba camera source
+- Fixed 5000-microsecond Mako exposure plus gain, black-level, and gamma controls
 - Trace color palette
 - Typed or arrow-adjustable trace line width
 
 ## Build and run
 
-Qt 6.8.3, Qt Multimedia, Qt SerialPort, CMake, Ninja, and the matching MinGW compiler are
-expected under `utilities/Qt`. From any PowerShell directory, use the scripts by
-their appropriate relative or absolute paths. From the repository root:
+Qt 6.8.3, Qt Multimedia, Qt SerialPort, CMake, Ninja, and the matching MinGW
+compiler are expected under `utilities/Qt`. Vimba X is expected under
+`utilities/AlliedVision/VimbaX`; see the root README for its driver and API
+setup. From any PowerShell directory, use the scripts by their appropriate
+relative or absolute paths. From the repository root:
 
 ```powershell
 .\scr\_gui\build_gui.ps1
