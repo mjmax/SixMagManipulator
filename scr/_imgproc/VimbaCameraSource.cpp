@@ -117,9 +117,8 @@ void VimbaCameraSource::stop()
 
 void VimbaCameraSource::setExposureTime(double value)
 {
-    Q_UNUSED(value)
     QMutexLocker locker(&m_controlMutex);
-    m_pendingControls.exposure = fixedExposureTimeMicroseconds;
+    m_pendingControls.exposure = value;
     m_pendingControls.exposurePending = true;
 }
 

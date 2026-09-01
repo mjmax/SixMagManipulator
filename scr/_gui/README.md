@@ -19,9 +19,9 @@ The camera selector defaults to the webcam and also lists physical Allied
 Vision cameras discovered through Vimba X. VimbaCameraSource uses the native
 VmbC API with 32 reusable acquisition buffers. The camera and detector run as
 fast as possible; only the workspace image and status updates are limited by
-the **GUI refresh rate**. Selecting a Vimba camera fixes **Exposure time** at
-5000 microseconds and enables its available **Gain**, **Black level**, and
-**Gamma** controls.
+the **GUI refresh rate**. Selecting a Vimba camera starts **Exposure time** at
+5000 microseconds and enables editing it together with the available **Gain**,
+**Black level**, and **Gamma** controls.
 
 The tracker runs on a high-priority worker thread and retains only the newest
 unprocessed camera frame. Detection uses every available frame, while camera,
@@ -65,7 +65,8 @@ emulator is automatically terminated when the main GUI closes.
 - Minimum circularity
 - GUI-only refresh rate
 - Webcam/Vimba camera source
-- Fixed 5000-microsecond Mako exposure plus gain, black-level, and gamma controls
+- Editable Mako exposure with a 5000-microsecond startup default
+- Gain, black-level, and gamma controls
 - Trace color palette
 - Typed or arrow-adjustable trace line width
 

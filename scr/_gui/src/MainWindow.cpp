@@ -979,9 +979,9 @@ MainWindow::MainWindow(QWidget *parent)
                     std::max(0.001, (state.maximum - state.minimum) / 200.0));
             }
         };
-        applyFeature(cameraExposure, exposure, false);
+        applyFeature(cameraExposure, exposure);
         cameraExposure->setToolTip(
-            "Fixed at 5000 µs for the Mako camera");
+            "Editable for the Mako camera; resets to 5000 µs when reopened");
         applyFeature(cameraGain, gain);
         applyFeature(cameraBlackLevel, blackLevel);
         applyFeature(cameraGamma, gamma);
