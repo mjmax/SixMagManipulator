@@ -1,0 +1,2 @@
+# Minimal Python-side dependencies for Allied Vision Mako acquisition.
+vmbpy[opencv]==1.2.2
