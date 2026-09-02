@@ -250,11 +250,37 @@ void ManipulatorView::setDetectionMaximumArea(int pixels)
     applyImageProcessingSettings(settings);
 }
 
+void ManipulatorView::setMaximumAreaPreview(bool visible, int areaPixels)
+{
+    const int validatedArea = std::max(1, areaPixels);
+    if (m_maximumAreaPreviewVisible == visible
+        && m_maximumAreaPreviewPixels == validatedArea) {
+        return;
+    }
+    m_maximumAreaPreviewVisible = visible;
+    m_maximumAreaPreviewPixels = validatedArea;
+    update();
+}
+
 void ManipulatorView::setDetectionMinimumCircularity(double circularity)
 {
     ImageProcessingSettings settings = m_imageTracker->settings();
     settings.minimumCircularity = circularity;
     applyImageProcessingSettings(settings);
+}
+
+void ManipulatorView::setMinimumCircularityPreview(bool visible,
+                                                   double threshold)
+{
+    const double validatedThreshold = std::clamp(threshold, 0.0, 1.0);
+    if (m_minimumCircularityPreviewVisible == visible
+        && qFuzzyCompare(m_minimumCircularityPreviewThreshold,
+                         validatedThreshold)) {
+        return;
+    }
+    m_minimumCircularityPreviewVisible = visible;
+    m_minimumCircularityPreviewThreshold = validatedThreshold;
+    update();
 }
 
 void ManipulatorView::setVisualizationRate(int framesPerSecond)
@@ -370,6 +396,7 @@ void ManipulatorView::setCameraSource(const QString &sourceId)
     m_latestDisplayFrame = {};
     loadCameraViewSettings(sourceId);
     m_objectDetected = false;
+    m_hasObjectMeasurement = false;
     m_lastVimbaDisplayNanoseconds.store(0, std::memory_order_release);
     update();
 
@@ -484,6 +511,8 @@ void ManipulatorView::receiveTrackingVisualization(const TrackingResult &result)
     m_objectDetected = true;
     m_objectPosition = object.normalizedPosition;
     m_objectRadius = object.normalizedRadius;
+    m_objectCircularity = object.circularity;
+    m_hasObjectMeasurement = true;
     if (m_traceEnabled)
         appendTraceDot(m_objectPosition);
     emit trackingStatusChanged(
@@ -852,20 +881,66 @@ void ManipulatorView::drawWorkspace(QPainter &painter,
     if (!m_traceOverlay.isNull())
         painter.drawImage(cameraSquareTarget, m_traceOverlay);
 
-    if (m_objectDetected) {
+    const bool showCircularity = m_minimumCircularityPreviewVisible
+        && m_hasObjectMeasurement;
+    if (m_objectDetected || showCircularity) {
         const QPointF marker(
             cameraSquareTarget.left()
                 + m_objectPosition.x() * cameraSquareTarget.width(),
             cameraSquareTarget.top()
                 + m_objectPosition.y() * cameraSquareTarget.height());
-        const double markerRadius = std::max(
-            4.0, m_objectRadius * cameraSquareTarget.width());
-        painter.setBrush(Qt::NoBrush);
-        painter.setPen(QPen(QColor("#58f0a4"), 2.0));
-        painter.drawEllipse(marker, markerRadius + 3.0, markerRadius + 3.0);
-        painter.setBrush(QColor(88, 240, 164, 190));
-        painter.setPen(QPen(QColor("#f4fff9"), 1.0));
-        painter.drawEllipse(marker, 2.5, 2.5);
+        if (m_maximumAreaPreviewVisible
+            && !m_latestDisplayFrame.isNull()) {
+            const int sourceSide = std::min(
+                m_latestDisplayFrame.width(),
+                m_latestDisplayFrame.height());
+            const double previewRadius = std::sqrt(
+                static_cast<double>(m_maximumAreaPreviewPixels) / pi)
+                * cameraSquareTarget.width()
+                / std::max(1, sourceSide);
+            painter.setPen(QPen(QColor(255, 76, 84, 205), 1.5));
+            painter.setBrush(QColor(236, 45, 58, 82));
+            painter.drawEllipse(marker, previewRadius, previewRadius);
+        }
+
+        if (m_objectDetected) {
+            const double markerRadius = std::max(
+                4.0, m_objectRadius * cameraSquareTarget.width());
+            painter.setBrush(Qt::NoBrush);
+            painter.setPen(QPen(QColor("#58f0a4"), 2.0));
+            painter.drawEllipse(marker, markerRadius + 3.0, markerRadius + 3.0);
+            painter.setBrush(QColor(88, 240, 164, 190));
+            painter.setPen(QPen(QColor("#f4fff9"), 1.0));
+            painter.drawEllipse(marker, 2.5, 2.5);
+        }
+
+        if (showCircularity) {
+            const bool passes = m_objectCircularity
+                >= m_minimumCircularityPreviewThreshold;
+            const QColor statusColor = passes
+                ? QColor("#58f0a4") : QColor("#ff4c54");
+            const double markerRadius = std::max(
+                4.0, m_objectRadius * cameraSquareTarget.width());
+
+            painter.setBrush(Qt::NoBrush);
+            painter.setPen(QPen(statusColor, 3.0));
+            painter.drawEllipse(marker, markerRadius + 7.0,
+                                markerRadius + 7.0);
+
+            const QString text = QStringLiteral("Circularity %1")
+                .arg(m_objectCircularity, 0, 'f', 2);
+            painter.setFont(QFont("Segoe UI", 9, QFont::DemiBold));
+            const QFontMetricsF metrics(painter.font());
+            QRectF labelRect = metrics.boundingRect(text)
+                .adjusted(-7.0, -4.0, 7.0, 4.0);
+            labelRect.moveCenter(QPointF(
+                marker.x(), marker.y() - markerRadius - 20.0));
+            painter.setPen(QPen(statusColor, 1.0));
+            painter.setBrush(QColor(7, 12, 18, 215));
+            painter.drawRoundedRect(labelRect, 5.0, 5.0);
+            painter.setPen(statusColor);
+            painter.drawText(labelRect, Qt::AlignCenter, text);
+        }
     }
     painter.restore();
 

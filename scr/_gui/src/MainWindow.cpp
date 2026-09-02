@@ -927,14 +927,43 @@ MainWindow::MainWindow(QWidget *parent)
         m_manipulatorView->setDetectionMinimumArea(value);
     });
     connect(maximumArea, qOverload<int>(&QSpinBox::valueChanged),
-            this, [this, minimumArea](int value) {
+            this, [this, minimumArea, maximumArea](int value) {
         minimumArea->setMaximum(value - 1);
         m_manipulatorView->setDetectionMaximumArea(value);
+        QWidget *focused = QApplication::focusWidget();
+        if (focused
+            && (focused == maximumArea
+                || maximumArea->isAncestorOf(focused))) {
+            m_manipulatorView->setMaximumAreaPreview(true, value);
+        }
+    });
+    connect(qApp, &QApplication::focusChanged,
+            this, [this, maximumArea](QWidget *, QWidget *focused) {
+        const bool editing = focused
+            && (focused == maximumArea
+                || maximumArea->isAncestorOf(focused));
+        m_manipulatorView->setMaximumAreaPreview(
+            editing, maximumArea->value());
     });
     connect(minimumCircularity,
             qOverload<double>(&QDoubleSpinBox::valueChanged),
-            m_manipulatorView,
-            &ManipulatorView::setDetectionMinimumCircularity);
+            this, [this, minimumCircularity](double value) {
+        m_manipulatorView->setDetectionMinimumCircularity(value);
+        QWidget *focused = QApplication::focusWidget();
+        if (focused
+            && (focused == minimumCircularity
+                || minimumCircularity->isAncestorOf(focused))) {
+            m_manipulatorView->setMinimumCircularityPreview(true, value);
+        }
+    });
+    connect(qApp, &QApplication::focusChanged,
+            this, [this, minimumCircularity](QWidget *, QWidget *focused) {
+        const bool editing = focused
+            && (focused == minimumCircularity
+                || minimumCircularity->isAncestorOf(focused));
+        m_manipulatorView->setMinimumCircularityPreview(
+            editing, minimumCircularity->value());
+    });
     connect(visualizationRate, qOverload<int>(&QSpinBox::valueChanged),
             m_manipulatorView, &ManipulatorView::setVisualizationRate);
     connect(traceColor, qOverload<int>(&QComboBox::currentIndexChanged),

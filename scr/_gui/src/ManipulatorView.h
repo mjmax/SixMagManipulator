@@ -47,7 +47,9 @@ public slots:
     void setDetectionThreshold(int threshold);
     void setDetectionMinimumArea(int pixels);
     void setDetectionMaximumArea(int pixels);
+    void setMaximumAreaPreview(bool visible, int areaPixels);
     void setDetectionMinimumCircularity(double circularity);
+    void setMinimumCircularityPreview(bool visible, double threshold);
     void setVisualizationRate(int framesPerSecond);
     void setTraceColor(const QColor &color);
     void setTraceWidth(double pixels);
@@ -130,7 +132,13 @@ private:
     QColor m_traceColor = QColor("#ff4b55");
     double m_traceWidth = 2.5;
     int m_maximumTraceDots = 16;
+    int m_maximumAreaPreviewPixels = 20000;
+    double m_minimumCircularityPreviewThreshold = 0.45;
+    double m_objectCircularity = 0.0;
     bool m_traceEnabled = false;
+    bool m_maximumAreaPreviewVisible = false;
+    bool m_minimumCircularityPreviewVisible = false;
+    bool m_hasObjectMeasurement = false;
     bool m_panUnlocked = false;
     bool m_panningImage = false;
     bool m_shutdownComplete = false;
