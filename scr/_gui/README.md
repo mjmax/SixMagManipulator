@@ -70,6 +70,15 @@ emulator is automatically terminated when the main GUI closes.
 - Trace color palette
 - Typed or arrow-adjustable trace line width
 
+While **Maximum object area** is being edited, a translucent red circle with
+the configured pixel area is drawn over the detected object. The preview is
+removed as soon as focus leaves that field.
+
+While **Minimum circularity** is being edited, the measured circularity is
+shown beside the object. A green ring means it meets the selected minimum; a
+red ring means it falls below the selected minimum. The last valid measurement
+remains visible during editing so a stricter trial value can be compared.
+
 The compact workspace controls provide lock/unlock, 10% zoom steps, an
 editable zoom percentage, and left-button image panning while unlocked. The
 default view is centered at 100%. Zoom and pan are saved independently for
