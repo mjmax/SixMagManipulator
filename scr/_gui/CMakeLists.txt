@@ -15,6 +15,8 @@ set(IMAGE_PROCESSING_DIRECTORY
     "${CMAKE_CURRENT_SOURCE_DIR}/../_imgproc")
 set(MOTOR_DIRECTORY
     "${CMAKE_CURRENT_SOURCE_DIR}/../_motors")
+set(SENSOR_DIRECTORY
+    "${CMAKE_CURRENT_SOURCE_DIR}/../_sensors")
 set(VIMBA_X_ROOT "" CACHE PATH "Allied Vision Vimba X installation root")
 if(NOT EXISTS "${VIMBA_X_ROOT}/api/include/VmbC/VmbC.h"
    OR NOT EXISTS "${VIMBA_X_ROOT}/api/lib/VmbC.lib")
@@ -35,11 +37,14 @@ qt_add_executable(SixMagManipulatorGui WIN32
     ${MOTOR_DIRECTORY}/DynamixelProtocol.h
     ${MOTOR_DIRECTORY}/MotorController.cpp
     ${MOTOR_DIRECTORY}/MotorController.h
+    ${SENSOR_DIRECTORY}/HallSensorController.cpp
+    ${SENSOR_DIRECTORY}/HallSensorController.h
 )
 
 target_include_directories(SixMagManipulatorGui PRIVATE
     ${IMAGE_PROCESSING_DIRECTORY}
     ${MOTOR_DIRECTORY}
+    ${SENSOR_DIRECTORY}
     "${VIMBA_X_ROOT}/api/include"
 )
 
