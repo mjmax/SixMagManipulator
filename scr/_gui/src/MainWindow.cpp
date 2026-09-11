@@ -2,6 +2,7 @@
 
 #include "ManipulatorView.h"
 #include "MotorController.h"
+#include "HallSensorController.h"
 
 #include <QAbstractSpinBox>
 #include <QApplication>
@@ -404,6 +405,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     m_manipulatorView = new ManipulatorView;
     m_motorController = new MotorController(this);
+    m_hallSensorController = new HallSensorController(this);
     m_manipulatorView->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     content->addWidget(m_manipulatorView, 1);
 
@@ -454,6 +456,7 @@ MainWindow::MainWindow(QWidget *parent)
     auto *controlTab = new QWidget;
     auto *actuatorsTab = new QWidget;
     auto *imageProcessingTab = new QWidget;
+    auto *poleCalibrationTab = new QWidget;
 
     auto *actuatorLayout = new QVBoxLayout(actuatorsTab);
     actuatorLayout->setContentsMargins(10, 8, 10, 8);
@@ -772,9 +775,118 @@ MainWindow::MainWindow(QWidget *parent)
 
     imageLayout->addStretch();
 
+    auto *poleCalibrationLayout = new QVBoxLayout(poleCalibrationTab);
+    poleCalibrationLayout->setContentsMargins(10, 8, 10, 8);
+    poleCalibrationLayout->setSpacing(10);
+
+    auto *sensorForm = new QGridLayout;
+    sensorForm->setContentsMargins(0, 0, 0, 0);
+    sensorForm->setHorizontalSpacing(10);
+    sensorForm->setVerticalSpacing(3);
+
+    auto *sensorPortSelector = new PortComboBox;
+    sensorPortSelector->setObjectName("sensorPortSelector");
+    sensorPortSelector->setFixedWidth(170);
+    sensorPortSelector->setToolTip("Arduino Mega COM port");
+
+    auto *sensorBaudSelector = new QComboBox;
+    sensorBaudSelector->setObjectName("sensorBaudSelector");
+    sensorBaudSelector->setFixedWidth(112);
+    const QList<int> sensorBaudRates = {
+        9600, 19200, 38400, 57600, 115200,
+        230400, 250000, 460800, 500000
+    };
+    for (const int baudRate : sensorBaudRates) {
+        sensorBaudSelector->addItem(
+            QLocale(QLocale::English).toString(baudRate), baudRate);
+    }
+    sensorBaudSelector->setCurrentIndex(
+        sensorBaudSelector->findData(115200));
+    new ComboArrowOverlay(sensorPortSelector);
+    new ComboArrowOverlay(sensorBaudSelector);
+
+    auto *sensorConnectButton = new QPushButton("Connect");
+    sensorConnectButton->setObjectName("sensorConnectButton");
+    sensorConnectButton->setFixedSize(118, 28);
+    sensorConnectButton->setProperty(
+        "connectionState", HallSensorController::Disconnected);
+
+    sensorForm->addWidget(makeFieldLabel("COM port"), 0, 0);
+    sensorForm->addWidget(makeFieldLabel("Baud rate"), 0, 1);
+    sensorForm->addWidget(makeFieldLabel("Connection"), 0, 2);
+    sensorForm->addWidget(sensorPortSelector, 1, 0, Qt::AlignLeft);
+    sensorForm->addWidget(sensorBaudSelector, 1, 1, Qt::AlignLeft);
+    sensorForm->addWidget(sensorConnectButton, 1, 2, Qt::AlignLeft);
+    sensorForm->setColumnStretch(3, 1);
+    poleCalibrationLayout->addLayout(sensorForm);
+
+    auto *sensorValuesRow = new QHBoxLayout;
+    sensorValuesRow->setContentsMargins(0, 2, 0, 0);
+    sensorValuesRow->setSpacing(10);
+    auto *sensorHeadingColumn = new QVBoxLayout;
+    sensorHeadingColumn->setContentsMargins(0, 0, 0, 0);
+    sensorHeadingColumn->setSpacing(4);
+    auto *sensorIdHeading = makeFieldLabel("SENSOR ID");
+    sensorIdHeading->setFixedHeight(14);
+    auto *sensorValuesHeading = makeFieldLabel("SENSOR VALUES");
+    sensorValuesHeading->setFixedHeight(28);
+    sensorValuesHeading->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
+    sensorHeadingColumn->addWidget(sensorIdHeading);
+    sensorHeadingColumn->addWidget(sensorValuesHeading);
+    sensorValuesRow->addLayout(sensorHeadingColumn);
+    QVector<QLabel *> sensorValueLabels;
+    sensorValueLabels.reserve(6);
+    for (int index = 0; index < 6; ++index) {
+        auto *sensorColumn = new QVBoxLayout;
+        sensorColumn->setContentsMargins(0, 0, 0, 0);
+        sensorColumn->setSpacing(4);
+        sensorColumn->setAlignment(Qt::AlignHCenter);
+
+        auto *sensorLabel = new QLabel(
+            QStringLiteral("S%1(M%1)").arg(index + 1));
+        sensorLabel->setObjectName("sensorIdLabel");
+        sensorLabel->setAlignment(Qt::AlignCenter);
+        auto *valueLabel = new QLabel("—");
+        valueLabel->setObjectName("hallSensorValue");
+        valueLabel->setFixedSize(58, 28);
+        valueLabel->setAlignment(Qt::AlignCenter);
+        valueLabel->setToolTip(
+            QStringLiteral("Raw Hall sensor %1 value").arg(index + 1));
+
+        sensorValueLabels.append(valueLabel);
+        sensorColumn->addWidget(sensorLabel, 0, Qt::AlignHCenter);
+        sensorColumn->addWidget(valueLabel, 0, Qt::AlignHCenter);
+        sensorValuesRow->addLayout(sensorColumn);
+    }
+    sensorValuesRow->addStretch();
+    poleCalibrationLayout->addLayout(sensorValuesRow);
+    poleCalibrationLayout->addStretch();
+
+    auto refreshSensorPorts = [sensorPortSelector] {
+        if (!sensorPortSelector->isEnabled())
+            return;
+        const QString selectedPort =
+            sensorPortSelector->currentData().toString();
+        QSignalBlocker blocker(sensorPortSelector);
+        sensorPortSelector->clear();
+        for (const auto &port : HallSensorController::availablePorts())
+            sensorPortSelector->addItem(port.first, port.second);
+        const int previousIndex = sensorPortSelector->findData(selectedPort);
+        if (previousIndex >= 0)
+            sensorPortSelector->setCurrentIndex(previousIndex);
+    };
+    sensorPortSelector->setBeforePopup(refreshSensorPorts);
+    refreshSensorPorts();
+    auto *sensorPortRefreshTimer = new QTimer(poleCalibrationTab);
+    sensorPortRefreshTimer->setInterval(1000);
+    connect(sensorPortRefreshTimer, &QTimer::timeout,
+            this, refreshSensorPorts);
+    sensorPortRefreshTimer->start();
+
     tabs->addTab(controlTab, "Control");
     tabs->addTab(actuatorsTab, "Actuators");
     tabs->addTab(imageProcessingTab, "Image Processing");
+    tabs->addTab(poleCalibrationTab, "Pole Calibration");
     controlLayout->addWidget(tabs, 1);
     rightColumn->addWidget(controlPanel);
     rightColumn->setStretchFactor(0, 1);
@@ -782,6 +894,61 @@ MainWindow::MainWindow(QWidget *parent)
     rightColumn->setSizes({1, 1});
     content->addWidget(rightColumn, 1);
     root->addLayout(content, 1);
+
+    connect(sensorConnectButton, &QPushButton::clicked,
+            this, [this, sensorPortSelector, sensorBaudSelector,
+                   sensorConnectButton] {
+        const int state =
+            sensorConnectButton->property("connectionState").toInt();
+        if (state != HallSensorController::Disconnected) {
+            m_hallSensorController->disconnectPort();
+            return;
+        }
+        const QString portName = sensorPortSelector->currentData().toString();
+        if (!portName.isEmpty()) {
+            m_hallSensorController->connectPort(
+                portName, sensorBaudSelector->currentData().toInt());
+        }
+    });
+    connect(m_hallSensorController,
+            &HallSensorController::connectionStateChanged,
+            this, [sensorPortSelector, sensorBaudSelector,
+                   sensorConnectButton, sensorValueLabels](
+                      int state, const QString &message) {
+        sensorConnectButton->setProperty("connectionState", state);
+        switch (state) {
+        case HallSensorController::Connecting:
+            sensorConnectButton->setText("Waiting...");
+            break;
+        case HallSensorController::Connected:
+            sensorConnectButton->setText("Connected");
+            break;
+        case HallSensorController::CommunicationError:
+            sensorConnectButton->setText("Invalid Stream");
+            break;
+        default:
+            sensorConnectButton->setText("Connect");
+            for (QLabel *label : sensorValueLabels)
+                label->setText("—");
+            break;
+        }
+        sensorConnectButton->setEnabled(true);
+        const bool settingsEnabled =
+            state == HallSensorController::Disconnected;
+        sensorPortSelector->setEnabled(settingsEnabled);
+        sensorBaudSelector->setEnabled(settingsEnabled);
+        sensorConnectButton->setToolTip(message);
+        sensorConnectButton->style()->unpolish(sensorConnectButton);
+        sensorConnectButton->style()->polish(sensorConnectButton);
+    });
+    connect(m_hallSensorController, &HallSensorController::sensorValuesReady,
+            this, [sensorValueLabels](const QVector<double> &values) {
+        const int count = std::min(sensorValueLabels.size(), values.size());
+        for (int index = 0; index < count; ++index) {
+            sensorValueLabels[index]->setText(
+                QString::number(values[index], 'g', 8));
+        }
+    });
 
     connect(motorConnectButton, &QPushButton::clicked,
             this, [this, portSelector, baudSelector, motorConnectButton,
@@ -1200,6 +1367,19 @@ MainWindow::MainWindow(QWidget *parent)
             background: #ef4f5f;
             border: 1px solid #ff9ca6;
         }
+        QLabel#sensorIdLabel {
+            color: #aebac7;
+            font-size: 9px;
+            font-weight: 700;
+        }
+        QLabel#hallSensorValue {
+            background: #0f151d;
+            color: #eef3f8;
+            border: 1px solid #344253;
+            border-radius: 5px;
+            font-size: 10px;
+            font-weight: 600;
+        }
         QLabel#pollBenchmarkLabel {
             color: #aebac7;
             font-size: 9px;
@@ -1223,7 +1403,8 @@ MainWindow::MainWindow(QWidget *parent)
             color: #fff1f2;
             border-color: #f07480;
         }
-        QPushButton#motorConnectButton {
+        QPushButton#motorConnectButton,
+        QPushButton#sensorConnectButton {
             background: #0f151d;
             color: #d5dee8;
             border: 1px solid #3b4b5d;
@@ -1232,21 +1413,25 @@ MainWindow::MainWindow(QWidget *parent)
             font-size: 10px;
             font-weight: 700;
         }
-        QPushButton#motorConnectButton:hover {
+        QPushButton#motorConnectButton:hover,
+        QPushButton#sensorConnectButton:hover {
             background: #1a2633;
             border-color: #60758c;
         }
-        QPushButton#motorConnectButton[connectionState="1"] {
+        QPushButton#motorConnectButton[connectionState="1"],
+        QPushButton#sensorConnectButton[connectionState="1"] {
             background: #8a651e;
             color: #fff3d2;
             border-color: #dbad4b;
         }
-        QPushButton#motorConnectButton[connectionState="2"] {
+        QPushButton#motorConnectButton[connectionState="2"],
+        QPushButton#sensorConnectButton[connectionState="2"] {
             background: #237a50;
             color: #f4fff9;
             border-color: #58d99a;
         }
-        QPushButton#motorConnectButton[connectionState="3"] {
+        QPushButton#motorConnectButton[connectionState="3"],
+        QPushButton#sensorConnectButton[connectionState="3"] {
             background: #8b2f39;
             color: #fff1f2;
             border-color: #f07480;
@@ -1310,6 +1495,8 @@ void MainWindow::shutdownResources()
         m_manipulatorView->shutdown();
     if (m_motorController)
         m_motorController->shutdown();
+    if (m_hallSensorController)
+        m_hallSensorController->shutdown();
 
 #ifdef Q_OS_WIN
     QProcess::execute(QStringLiteral("taskkill"),

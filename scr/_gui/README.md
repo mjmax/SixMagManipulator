@@ -58,6 +58,13 @@ Run `scr/_motors/run_emulator.ps1` to test the same scan and acquisition path
 without hardware, then select **Simulator (localhost)** before connecting. The
 emulator is automatically terminated when the main GUI closes.
 
+The **Pole Calibration** tab connects to an Arduino Mega sensor stream. Select
+the Arduino COM port and baud rate (115200 by default), then connect. The
+button turns green only after a complete six-value comma-separated record is
+received. Partial or malformed startup data is discarded, and the six raw Hall
+sensor readings are displayed as M1 through M6. The serial port is released
+automatically when the GUI closes.
+
 ## Image Processing controls
 
 - Dark-pixel threshold

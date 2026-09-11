@@ -6,6 +6,7 @@ class QLabel;
 class ManipulatorView;
 class QCloseEvent;
 class MotorController;
+class HallSensorController;
 
 class MainWindow final : public QMainWindow
 {
@@ -23,6 +24,7 @@ private:
 
     ManipulatorView *m_manipulatorView = nullptr;
     MotorController *m_motorController = nullptr;
+    HallSensorController *m_hallSensorController = nullptr;
     QLabel *m_trackingState = nullptr;
     QLabel *m_trackingPosition = nullptr;
     QLabel *m_trackingPerformance = nullptr;
