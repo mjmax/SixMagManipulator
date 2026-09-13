@@ -165,6 +165,13 @@ Closing the main GUI also terminates the emulator process if it is running.
 
 ## Mathematical model documentation
 
+The native acceleration/Jacobian library is in `scr/_control`. Build and test
+it with `.\scr\_control\build_control.ps1 -Benchmark`; it uses the existing
+compiler tools in `utilities` and does not require MATLAB or Qt at runtime.
+See [Native control model](docs/native_control_model.md) for the SI-unit API,
+MATLAB reference comparisons, and timing results. It does not yet implement
+the control law or send motor commands.
+
 The model report source lives in [docs/](docs/README.md), alongside the source
 directory rather than inside it. See that documentation for the LaTeX build
 commands. The final report is saved under output/pdf/; temporary LaTeX build

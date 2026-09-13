@@ -1,5 +1,8 @@
 # Magnetic model review
 
+For the native SI-unit evaluator intended for the future control loop, see
+[Native control model](native_control_model.md).
+
 For the compatible faster simulator functions, usage instructions, and measured
 verification results, see [Optimized MATLAB model](optimized_matlab_model.md).
 
