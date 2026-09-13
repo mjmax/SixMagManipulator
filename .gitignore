@@ -6,3 +6,34 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 
+# PDF build and preview intermediates (final reports live in output/pdf/).
+/tmp/pdfs/
+
+# Generated report PDFs; keep their editable LaTeX sources.
+/output/pdf/**/*.pdf
+/docs/**/*.pdf
+
+# LaTeX auxiliary files if compiled directly in docs/ or its subdirectories.
+/docs/**/*.aux
+/docs/**/*.log
+/docs/**/*.out
+/docs/**/*.toc
+/docs/**/*.lof
+/docs/**/*.lot
+/docs/**/*.fls
+/docs/**/*.fdb_latexmk
+/docs/**/*.synctex
+/docs/**/*.synctex.gz
+/docs/**/*.bbl
+/docs/**/*.blg
+/docs/**/*.bcf
+/docs/**/*.run.xml
+/docs/**/*.idx
+/docs/**/*.ind
+/docs/**/*.ilg
+/docs/**/*.nav
+/docs/**/*.snm
+/docs/**/*.vrb
+/docs/**/*.dvi
+/docs/**/*.xdv
+/docs/**/*.tmp
