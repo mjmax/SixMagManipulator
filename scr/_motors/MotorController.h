@@ -30,6 +30,12 @@ public:
     ~MotorController() override;
 
     static QList<QPair<QString, QString>> availableEndpoints();
+    std::array<double, 6> biases() const;
+    double speedLimitRpm() const;
+    // Full-speed feedback: magnet angle = servo angle - bias, in degrees;
+    // index 0 corresponds to M1. Future control laws must use these unbiased
+    // angles. A future goal-position write path must add that motor's bias
+    // exactly once before converting to the AX-18A 0..1023 position value.
     std::array<double, 6> latestAngles() const;
     void shutdown();
 
@@ -38,6 +44,9 @@ public slots:
                          const QVector<int> &motorIds);
     void disconnectEndpoint();
     void startPollBenchmark(int cycleCount = 100);
+    void setBias(int motorIndex, double degrees);
+    void setSpeedLimitRpm(double rpm);
+    void setGuiRefreshRate(int framesPerSecond);
 
 signals:
     void connectionStateChanged(int state, const QString &message);
@@ -52,6 +61,7 @@ signals:
                           const QVector<int> &motorIds);
     void disconnectRequested();
     void pollBenchmarkRequested(int cycleCount);
+    void speedLimitRequested(int rawSpeed);
 
 private:
     QThread *m_workerThread = nullptr;

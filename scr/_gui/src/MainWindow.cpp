@@ -180,6 +180,57 @@ private:
     QPointer<QWidget> m_parent;
 };
 
+class BelowAnchorOverlay final : public QObject
+{
+public:
+    BelowAnchorOverlay(QWidget *anchor, QWidget *overlay, QWidget *parent,
+                       QWidget *leftAnchor = nullptr)
+        : QObject(overlay),
+          m_anchor(anchor),
+          m_overlay(overlay),
+          m_parent(parent),
+          m_leftAnchor(leftAnchor)
+    {
+        m_anchor->installEventFilter(this);
+        m_parent->installEventFilter(this);
+        schedulePosition();
+    }
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if ((watched == m_anchor || watched == m_parent)
+            && (event->type() == QEvent::Show
+                || event->type() == QEvent::Move
+                || event->type() == QEvent::Resize
+                || event->type() == QEvent::LayoutRequest)) {
+            schedulePosition();
+        }
+        return QObject::eventFilter(watched, event);
+    }
+
+private:
+    void schedulePosition()
+    {
+        QTimer::singleShot(0, this, [this] {
+            if (!m_anchor || !m_overlay || !m_parent)
+                return;
+            const QPoint below = m_anchor->mapTo(
+                m_parent, QPoint(0, m_anchor->height() + 6));
+            const int x = m_leftAnchor
+                ? m_leftAnchor->mapTo(m_parent, QPoint(0, 0)).x()
+                : below.x() + (m_anchor->width() - m_overlay->width()) / 2;
+            m_overlay->move(x, below.y());
+            m_overlay->raise();
+        });
+    }
+
+    QPointer<QWidget> m_anchor;
+    QPointer<QWidget> m_overlay;
+    QPointer<QWidget> m_parent;
+    QPointer<QWidget> m_leftAnchor;
+};
+
 class PortComboBox final : public QComboBox
 {
 public:
@@ -446,7 +497,7 @@ MainWindow::MainWindow(QWidget *parent)
                                     MotorController::Disconnected);
 
     auto *pollActuatorsPanel = new QWidget(actuatorsTab);
-    pollActuatorsPanel->setFixedSize(84, 74);
+    pollActuatorsPanel->setFixedSize(84, 120);
     auto *pollActuatorsLayout = new QVBoxLayout(pollActuatorsPanel);
     pollActuatorsLayout->setContentsMargins(0, 0, 0, 0);
     pollActuatorsLayout->setSpacing(3);
@@ -457,14 +508,33 @@ MainWindow::MainWindow(QWidget *parent)
     pollActuatorsButton->setProperty("benchmarkRunning", false);
     pollActuatorsButton->setToolTip(
         "Measure the average time for 100 complete six-motor position reads");
+    auto *speedLimitEditor = new QDoubleSpinBox;
+    speedLimitEditor->setObjectName("motorSpeedLimitEditor");
+    speedLimitEditor->setFixedSize(84, 24);
+    speedLimitEditor->setRange(0.11, 97.0);
+    speedLimitEditor->setDecimals(2);
+    speedLimitEditor->setSingleStep(1.0);
+    speedLimitEditor->setSuffix(" rpm");
+    speedLimitEditor->setKeyboardTracking(false);
+    speedLimitEditor->setValue(m_motorController->speedLimitRpm());
+    speedLimitEditor->setToolTip(
+        "Motor speed limit in RPM (AX-18A Moving Speed register)");
     auto *pollBenchmarkLabel = new QLabel("—");
     pollBenchmarkLabel->setObjectName("pollBenchmarkLabel");
     pollBenchmarkLabel->setFixedSize(84, 18);
     pollBenchmarkLabel->setAlignment(Qt::AlignCenter);
+    auto *speedLimitLabel = makeFieldLabel("Speed (RPM)");
+    speedLimitLabel->setFixedSize(84, 18);
+    speedLimitLabel->setAlignment(Qt::AlignCenter);
     pollActuatorsLayout->addWidget(
         pollActuatorsButton, 0, Qt::AlignHCenter);
     pollActuatorsLayout->addWidget(
         pollBenchmarkLabel, 0, Qt::AlignHCenter);
+    pollActuatorsLayout->addWidget(
+        speedLimitLabel, 0, Qt::AlignHCenter);
+    pollActuatorsLayout->addWidget(
+        speedLimitEditor, 0, Qt::AlignHCenter);
+    new SpinArrowOverlay(speedLimitEditor);
 
     actuatorForm->addWidget(makeFieldLabel("COM port"), 0, 0);
     actuatorForm->addWidget(makeFieldLabel("Baud rate"), 0, 1);
@@ -488,6 +558,7 @@ MainWindow::MainWindow(QWidget *parent)
     motorStatusRow->addWidget(motorStatusLabel, 0, Qt::AlignTop);
     QVector<QFrame *> motorStatusLights;
     QVector<QSpinBox *> motorIdEditors;
+    const auto savedMotorBiases = m_motorController->biases();
     motorStatusLights.reserve(6);
     motorIdEditors.reserve(6);
     for (int index = 0; index < 6; ++index) {
@@ -517,16 +588,43 @@ MainWindow::MainWindow(QWidget *parent)
         idEditor->setToolTip(
             QStringLiteral("DYNAMIXEL bus ID assigned to M%1").arg(index + 1));
 
+        auto *biasEditor = new QDoubleSpinBox(actuatorsTab);
+        biasEditor->setObjectName("motorBiasEditor");
+        biasEditor->setRange(0.0, 300.0);
+        biasEditor->setDecimals(1);
+        biasEditor->setSingleStep(0.5);
+        biasEditor->setValue(savedMotorBiases[static_cast<std::size_t>(index)]);
+        biasEditor->setSuffix("°");
+        biasEditor->setFixedSize(54, 24);
+        biasEditor->setAlignment(Qt::AlignCenter);
+        biasEditor->setButtonSymbols(QAbstractSpinBox::NoButtons);
+        biasEditor->setKeyboardTracking(false);
+        biasEditor->setToolTip(
+            QStringLiteral("M%1 zero-position bias; increasing servo angle is counterclockwise")
+                .arg(index + 1));
+        connect(biasEditor, qOverload<double>(&QDoubleSpinBox::valueChanged),
+                this, [this, index](double degrees) {
+            m_motorController->setBias(index, degrees);
+        });
+
         motorStatusLights.append(light);
         motorIdEditors.append(idEditor);
         motorColumn->addWidget(idLabel, 0, Qt::AlignHCenter);
         motorColumn->addWidget(light, 0, Qt::AlignHCenter);
         motorColumn->addWidget(idEditor, 0, Qt::AlignHCenter);
         motorStatusRow->addLayout(motorColumn);
+        new BelowAnchorOverlay(idEditor, biasEditor, actuatorsTab);
     }
     motorStatusRow->addStretch();
     actuatorLayout->addLayout(motorStatusRow);
     actuatorLayout->addStretch();
+
+    auto *biasLabel = makeFieldLabel("BIAS");
+    biasLabel->setParent(actuatorsTab);
+    biasLabel->setFixedHeight(24);
+    biasLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    new BelowAnchorOverlay(motorIdEditors.first(), biasLabel,
+                           actuatorsTab, motorStatusLabel);
 
     auto refreshActuatorPorts = [portSelector] {
         if (!portSelector->isEnabled())
@@ -998,6 +1096,9 @@ MainWindow::MainWindow(QWidget *parent)
         pollActuatorsButton->style()->polish(pollActuatorsButton);
         m_motorController->startPollBenchmark(100);
     });
+    connect(speedLimitEditor,
+            QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            m_motorController, &MotorController::setSpeedLimitRpm);
     connect(m_motorController, &MotorController::connectionStateChanged,
             this, [portSelector, baudSelector, motorConnectButton,
                    motorIdEditors, pollActuatorsButton](
@@ -1182,6 +1283,8 @@ MainWindow::MainWindow(QWidget *parent)
     });
     connect(visualizationRate, qOverload<int>(&QSpinBox::valueChanged),
             m_manipulatorView, &ManipulatorView::setVisualizationRate);
+    connect(visualizationRate, qOverload<int>(&QSpinBox::valueChanged),
+            m_motorController, &MotorController::setGuiRefreshRate);
     connect(traceColor, qOverload<int>(&QComboBox::currentIndexChanged),
             this, [this, traceColor](int index) {
         m_manipulatorView->setTraceColor(traceColor->itemData(index).value<QColor>());
@@ -1403,6 +1506,10 @@ MainWindow::MainWindow(QWidget *parent)
             font-weight: 700;
         }
         QSpinBox#motorIdEditor {
+            padding: 1px 3px;
+            font-size: 9px;
+        }
+        QDoubleSpinBox#motorBiasEditor {
             padding: 1px 3px;
             font-size: 9px;
         }

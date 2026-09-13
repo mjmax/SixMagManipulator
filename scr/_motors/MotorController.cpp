@@ -9,12 +9,14 @@
 #include <QMutexLocker>
 #include <QSerialPort>
 #include <QSerialPortInfo>
+#include <QSettings>
 #include <QSet>
 #include <QTcpSocket>
 #include <QThread>
 #include <QTimer>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 
 namespace {
@@ -22,17 +24,32 @@ constexpr int motorCount = 6;
 constexpr int simulatorPort = 45454;
 constexpr int transactionTimeoutMs = 30;
 constexpr quint8 presentPositionAddress = 36;
+constexpr quint8 movingSpeedAddress = 32;
+constexpr double speedRpmPerStep = 0.111;
+constexpr double maximumSpeedRpm = 97.0;
+
+int rpmToSpeedRegister(double rpm)
+{
+    // Joint-mode value zero removes the limit; never use it for a positive RPM.
+    return std::clamp(static_cast<int>(std::lround(rpm / speedRpmPerStep)),
+                      1, 1023);
+}
 
 double rawPositionToDegrees(quint16 rawPosition)
 {
-    return (static_cast<double>(rawPosition) - 511.5) * 300.0 / 1023.0;
+    return static_cast<double>(rawPosition) * 300.0 / 1023.0;
 }
 }
 
 struct MotorStateStore
 {
     mutable QMutex mutex;
+    std::array<double, motorCount> rawAngles{};
+    std::array<double, motorCount> biases{};
     std::array<double, motorCount> angles{};
+    double speedLimitRpm = 35.0;
+    int speedRegister = rpmToSpeedRegister(35.0);
+    std::atomic_int guiRefreshRateHz{15};
 };
 
 class MotorWorker final : public QObject
@@ -140,6 +157,19 @@ public slots:
             return;
         }
 
+        int speed = 0;
+        {
+            QMutexLocker locker(&m_stateStore->mutex);
+            speed = m_stateStore->speedRegister;
+        }
+        if (!writeMovingSpeed(speed)) {
+            closeDevice(false);
+            emit connectionStateChanged(
+                MotorController::CommunicationError,
+                QStringLiteral("Could not set speed on all six motors"));
+            return;
+        }
+
         m_motorStates.fill(1);
         m_guiClock.restart();
         m_connected = true;
@@ -166,6 +196,22 @@ public slots:
         m_benchmarkTotalMilliseconds = 0.0;
     }
 
+    void applySpeedLimit(int rawSpeed)
+    {
+        if (!m_connected || !m_device)
+            return;
+        m_pollTimer->stop();
+        const bool success = writeMovingSpeed(rawSpeed);
+        m_speedWriteFailed = !success;
+        const int state = success ? MotorController::Connected
+                                  : MotorController::CommunicationError;
+        m_lastReportedState = state;
+        emit connectionStateChanged(
+            state, success ? QStringLiteral("All six motors connected")
+                           : QStringLiteral("Could not set motor speed"));
+        m_pollTimer->start();
+    }
+
 private slots:
     void pollPositions()
     {
@@ -174,6 +220,11 @@ private slots:
 
         QElapsedTimer cycleClock;
         cycleClock.start();
+        std::array<double, motorCount> rawAngles;
+        {
+            QMutexLocker locker(&m_stateStore->mutex);
+            rawAngles = m_stateStore->rawAngles;
+        }
         std::array<double, motorCount> angles{};
         bool allHealthy = true;
         bool statesChanged = false;
@@ -195,13 +246,10 @@ private slots:
                 const quint16 raw = static_cast<quint8>(response.parameters.at(0))
                     | (static_cast<quint16>(
                            static_cast<quint8>(response.parameters.at(1))) << 8);
-                angles[static_cast<std::size_t>(index)] =
+                rawAngles[static_cast<std::size_t>(index)] =
                     rawPositionToDegrees(raw);
                 newState = 1;
             } else {
-                QMutexLocker locker(&m_stateStore->mutex);
-                angles[static_cast<std::size_t>(index)] =
-                    m_stateStore->angles[static_cast<std::size_t>(index)];
                 allHealthy = false;
             }
             if (m_motorStates[static_cast<std::size_t>(index)] != newState) {
@@ -216,6 +264,12 @@ private slots:
 
         {
             QMutexLocker locker(&m_stateStore->mutex);
+            m_stateStore->rawAngles = rawAngles;
+            for (int index = 0; index < motorCount; ++index) {
+                const std::size_t position = static_cast<std::size_t>(index);
+                angles[position] = rawAngles[position]
+                    - m_stateStore->biases[position];
+            }
             m_stateStore->angles = angles;
         }
 
@@ -227,18 +281,21 @@ private slots:
             emit motorStatesChanged(states);
         }
 
-        const int newConnectionState = allHealthy
+        const int newConnectionState = allHealthy && !m_speedWriteFailed
             ? MotorController::Connected
             : MotorController::CommunicationError;
         if (newConnectionState != m_lastReportedState) {
             m_lastReportedState = newConnectionState;
             emit connectionStateChanged(
                 newConnectionState,
-                allHealthy ? QStringLiteral("All six motors connected")
+                allHealthy && !m_speedWriteFailed
+                    ? QStringLiteral("All six motors connected")
                            : QStringLiteral("Motor communication error"));
         }
 
-        if (!m_guiClock.isValid() || m_guiClock.elapsed() >= 66) {
+        const int guiInterval = std::max(
+            1, 1000 / m_stateStore->guiRefreshRateHz.load(std::memory_order_relaxed));
+        if (!m_guiClock.isValid() || m_guiClock.elapsed() >= guiInterval) {
             QVector<double> guiAngles;
             guiAngles.reserve(motorCount);
             for (const double angle : angles)
@@ -258,6 +315,22 @@ signals:
     void pollBenchmarkFailed(const QString &message);
 
 private:
+    bool writeMovingSpeed(int rawSpeed)
+    {
+        QByteArray parameters;
+        parameters.append(char(movingSpeedAddress));
+        parameters.append(char(rawSpeed & 0xff));
+        parameters.append(char((rawSpeed >> 8) & 0xff));
+        for (const int id : m_motorIds) {
+            DynamixelProtocol::Packet response;
+            if (!transact(static_cast<quint8>(id),
+                          DynamixelProtocol::writeInstruction,
+                          parameters, response) || response.code != 0)
+                return false;
+        }
+        return true;
+    }
+
     void updatePollBenchmark(double cycleMilliseconds, bool successful)
     {
         if (m_benchmarkTargetCycles <= 0)
@@ -351,6 +424,7 @@ private:
                 QStringLiteral("Disconnected during poll test"));
         }
         m_connected = false;
+        m_speedWriteFailed = false;
         if (m_pollTimer)
             m_pollTimer->stop();
         if (m_device) {
@@ -380,6 +454,7 @@ private:
     int m_benchmarkCompletedCycles = 0;
     double m_benchmarkTotalMilliseconds = 0.0;
     bool m_connected = false;
+    bool m_speedWriteFailed = false;
 };
 
 MotorController::MotorController(QObject *parent)
@@ -387,6 +462,26 @@ MotorController::MotorController(QObject *parent)
       m_workerThread(new QThread(this)),
       m_stateStore(std::make_shared<MotorStateStore>())
 {
+    m_stateStore->rawAngles.fill(150.0);
+    m_stateStore->biases.fill(150.0);
+    QSettings settings;
+    settings.beginGroup(QStringLiteral("motorBiases"));
+    for (int index = 0; index < motorCount; ++index) {
+        const double saved = settings.value(
+            QStringLiteral("M%1").arg(index + 1), 150.0).toDouble();
+        if (std::isfinite(saved) && saved >= 0.0 && saved <= 300.0)
+            m_stateStore->biases[static_cast<std::size_t>(index)] = saved;
+    }
+    settings.endGroup();
+
+    const double savedSpeed = settings.value(
+        QStringLiteral("motorSpeedLimitRpm"), 35.0).toDouble();
+    if (std::isfinite(savedSpeed) && savedSpeed >= 0.11
+        && savedSpeed <= maximumSpeedRpm) {
+        m_stateStore->speedLimitRpm = savedSpeed;
+        m_stateStore->speedRegister = rpmToSpeedRegister(savedSpeed);
+    }
+
     m_worker = new MotorWorker(m_stateStore);
     m_worker->moveToThread(m_workerThread);
     connect(m_workerThread, &QThread::started,
@@ -401,6 +496,9 @@ MotorController::MotorController(QObject *parent)
             Qt::QueuedConnection);
     connect(this, &MotorController::pollBenchmarkRequested,
             m_worker, &MotorWorker::startPollBenchmark,
+            Qt::QueuedConnection);
+    connect(this, &MotorController::speedLimitRequested,
+            m_worker, &MotorWorker::applySpeedLimit,
             Qt::QueuedConnection);
     connect(m_worker, &MotorWorker::connectionStateChanged,
             this, &MotorController::connectionStateChanged);
@@ -453,6 +551,57 @@ std::array<double, 6> MotorController::latestAngles() const
 {
     QMutexLocker locker(&m_stateStore->mutex);
     return m_stateStore->angles;
+}
+
+std::array<double, 6> MotorController::biases() const
+{
+    QMutexLocker locker(&m_stateStore->mutex);
+    return m_stateStore->biases;
+}
+
+double MotorController::speedLimitRpm() const
+{
+    QMutexLocker locker(&m_stateStore->mutex);
+    return m_stateStore->speedLimitRpm;
+}
+
+void MotorController::setSpeedLimitRpm(double rpm)
+{
+    if (!std::isfinite(rpm) || rpm < 0.11
+        || rpm > maximumSpeedRpm)
+        return;
+    const int rawSpeed = rpmToSpeedRegister(rpm);
+    {
+        QMutexLocker locker(&m_stateStore->mutex);
+        m_stateStore->speedLimitRpm = rpm;
+        m_stateStore->speedRegister = rawSpeed;
+    }
+    QSettings settings;
+    settings.setValue(QStringLiteral("motorSpeedLimitRpm"), rpm);
+    emit speedLimitRequested(rawSpeed);
+}
+
+void MotorController::setBias(int motorIndex, double degrees)
+{
+    if (motorIndex < 0 || motorIndex >= motorCount
+        || !std::isfinite(degrees) || degrees < 0.0 || degrees > 300.0)
+        return;
+    {
+        QMutexLocker locker(&m_stateStore->mutex);
+        const std::size_t position = static_cast<std::size_t>(motorIndex);
+        m_stateStore->biases[position] = degrees;
+        m_stateStore->angles[position] =
+            m_stateStore->rawAngles[position] - degrees;
+    }
+    QSettings settings;
+    settings.setValue(QStringLiteral("motorBiases/M%1").arg(motorIndex + 1),
+                      degrees);
+}
+
+void MotorController::setGuiRefreshRate(int framesPerSecond)
+{
+    m_stateStore->guiRefreshRateHz.store(
+        std::clamp(framesPerSecond, 1, 60), std::memory_order_relaxed);
 }
 
 void MotorController::connectEndpoint(const QString &endpoint, int baudRate,

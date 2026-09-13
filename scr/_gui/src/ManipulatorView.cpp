@@ -34,15 +34,6 @@ QPointF unitVector(double angleRadians)
     return {std::cos(angleRadians), -std::sin(angleRadians)};
 }
 
-double normalizedAngle(double degrees)
-{
-    double result = std::fmod(degrees, 360.0);
-    if (result > 180.0)
-        result -= 360.0;
-    if (result <= -180.0)
-        result += 360.0;
-    return result;
-}
 }
 
 ManipulatorView::ManipulatorView(QWidget *parent)
@@ -215,7 +206,11 @@ void ManipulatorView::setMagnetAngle(int magnetIndex, double angleDegrees)
 {
     if (magnetIndex < 0 || magnetIndex >= static_cast<int>(m_magnetAngles.size()))
         return;
-    m_magnetAngles[static_cast<std::size_t>(magnetIndex)] = normalizedAngle(angleDegrees);
+    if (!std::isfinite(angleDegrees))
+        return;
+    // Preserve the full signed bias-corrected angle in the label. Painting
+    // naturally wraps the face orientation when a bias extends past 180°.
+    m_magnetAngles[static_cast<std::size_t>(magnetIndex)] = angleDegrees;
     update();
 }
 

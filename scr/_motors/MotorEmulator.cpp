@@ -15,6 +15,7 @@ namespace {
 constexpr int motorCount = 6;
 constexpr quint16 serverPort = 45454;
 constexpr quint8 presentPositionAddress = 36;
+constexpr quint8 movingSpeedAddress = 32;
 constexpr double pi = 3.14159265358979323846;
 
 quint16 simulatedPosition(int id, qint64 elapsedMilliseconds)
@@ -68,6 +69,11 @@ int main(int argc, char *argv[])
                             responseParameters.append(char((position >> 8) & 0xff));
                             shouldRespond = true;
                         }
+                    } else if (request.code == DynamixelProtocol::writeInstruction
+                               && request.parameters.size() == 3
+                               && static_cast<quint8>(request.parameters.at(0))
+                                   == movingSpeedAddress) {
+                        shouldRespond = true;
                     }
 
                     if (shouldRespond) {

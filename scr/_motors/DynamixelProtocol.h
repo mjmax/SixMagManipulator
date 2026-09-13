@@ -6,6 +6,7 @@ namespace DynamixelProtocol {
 
 constexpr quint8 pingInstruction = 0x01;
 constexpr quint8 readInstruction = 0x02;
+constexpr quint8 writeInstruction = 0x03;
 constexpr quint8 syncWriteInstruction = 0x83;
 
 struct Packet

@@ -49,6 +49,19 @@ defaulting to 1,000,000, one connect/scan button, six status lights, and an
 editable bus-ID field beneath each light. The default IDs are 1 through 6; valid
 IDs are 0 through 253 and must be unique.
 
+Each motor also has a saved **Bias** field from 0° to 300°, defaulting to
+150°. The worker subtracts this bias from every 0°–300° present-position
+reading, so `MotorController::latestAngles()` gives full-rate, signed angles
+relative to each magnet's zero position (positive counterclockwise). Magnet
+dials and labels use those corrected angles and update at the selected GUI
+refresh rate. The bias is associated with M1–M6, not the editable bus ID.
+
+For the future control loop, keep all measured and commanded magnet angles in
+this bias-free coordinate system. At the motor-command boundary only, add the
+corresponding M1–M6 bias to each commanded angle, validate the resulting servo
+angle against its 0°–300° physical range, and then encode the goal position.
+Do not add or subtract the bias again inside the control law.
+
 Real USB2Dynamixel hardware uses the Qt serial/VCP path with the FTDI latency
 timer set to 1 ms. Run
 `scr/_motors/configure_ftdi_latency.ps1 -PortName COM3` once per PC/adapter.
@@ -114,6 +127,16 @@ default view is centered at 100%. Zoom and pan are saved independently for
 each camera source and restored after source changes or application restarts.
 
 ## Build and run
+
+The **Actuators** tab has a motor speed-limit box beneath the **Poll Actuators**
+result, labeled **Speed (RPM)**.
+It is in RPM (35 RPM by default) and is saved across launches. On connection
+and after edits while connected, the application converts RPM to the AX-18A
+Protocol 1.0 Moving Speed register (address 32, two bytes) using approximately
+0.111 RPM per step and writes the value to all six configured motor IDs.
+The supported range is 0.11–97 RPM. Register value zero, which means
+unrestricted speed in joint mode, is never sent for a positive limit. See the
+[AX-18A control table](https://emanual.robotis.com/docs/en/dxl/ax/ax-18a/).
 
 Qt 6.8.3, Qt Multimedia, Qt SerialPort, CMake, Ninja, and the matching MinGW
 compiler are expected under `utilities/Qt`. Vimba X is expected under
