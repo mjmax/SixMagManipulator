@@ -163,6 +163,13 @@ Keep the emulator process running, select **Simulator (localhost)** in the
 Actuators tab, leave the baud selector at 1,000,000, and press **Connect**.
 Closing the main GUI also terminates the emulator process if it is running.
 
+## Mathematical model documentation
+
+The model report source lives in [docs/](docs/README.md), alongside the source
+directory rather than inside it. See that documentation for the LaTeX build
+commands. The final report is saved under output/pdf/; temporary LaTeX build
+files are excluded from Git.
+
 ## Run the Qt GUI
 
 After building, start the interface with:

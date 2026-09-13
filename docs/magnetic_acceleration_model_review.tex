@@ -1,0 +1,654 @@
+% Self-contained description of the supplied MATLAB reference model.
+% Compile twice with pdflatex; see docs/README.md from the repository root.
+\documentclass[11pt,a4paper]{article}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=23mm,headheight=15pt,headsep=8mm,footskip=11mm]{geometry}
+\usepackage{amsmath,amssymb,bm,mathtools}
+\usepackage{booktabs,array}
+\usepackage{xcolor,fancyhdr,hyperref}
+\definecolor{navy}{HTML}{17324D}
+\definecolor{slate}{HTML}{4C6173}
+\hypersetup{colorlinks=true,linkcolor=navy,urlcolor=navy,
+pdftitle={Analytical Magnetic Acceleration Model: Reference Equations and Implementation Review},
+pdfauthor={SixMagManipulator project},
+pdfsubject={Six-magnet MATLAB reference model and analytical Jacobians}}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\textcolor{slate}{SixMagManipulator}}
+\fancyhead[R]{\small\textcolor{slate}{Reference model review}}
+\fancyfoot[L]{\footnotesize\textcolor{slate}{13 September 2026 \quad | \quad Revision 1}}
+\fancyfoot[R]{\footnotesize\thepage}
+\renewcommand{\headrulewidth}{0.3pt}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{5pt}
+\setlength{\emergencystretch}{2em}
+\renewcommand{\arraystretch}{1.16}
+\numberwithin{equation}{section}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\thv}{\bm{\theta}}
+\newcommand{\vct}{\operatorname{vec}}
+\newcommand{\code}[1]{\texttt{\detokenize{#1}}}
+\newcommand{\source}[1]{\textit{Source:} \code{#1}.}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\begin{document}
+\thispagestyle{empty}
+\begin{center}
+{\small\textcolor{slate}{SIXMAGMANIPULATOR \quad / \quad CONTROL MODEL DOCUMENTATION}}\\[8mm]
+{\LARGE\bfseries\textcolor{navy}{Analytical Magnetic\\[2mm] Acceleration Model}}\\[5mm]
+{\large Reference equations, analytical Jacobians,\\[1mm]
+verification results, and implementation review}\\[6mm]
+{\small 13 September 2026 \qquad Revision 1}
+\end{center}
+\vspace{4mm}
+\begin{abstract}
+\noindent
+This report reconstructs the model implemented by the nine MATLAB functions
+and two data files in \code{scr/_control/__refmod}. The active model represents
+each permanent magnet by 144 fitted point sources, transforms their fields
+into the workspace frame, and obtains magnetic acceleration from the gradient
+of a scaled field energy. Position and magnet-angle Jacobians are analytical.
+Read-only MATLAB checks support the consistency of the active implementation
+at sampled configurations. The report records coordinate conventions, required
+parameters, derivative formulas, verification results, and opportunities to
+avoid repeated calculations. The inactive dipole branch contains derivative
+inconsistencies and is documented separately. Physical field units and the
+mapping between model angle zero and the GUI pole orientation remain subject
+to confirmation.
+\end{abstract}
+
+\section{Scope and review status}
+\label{sec:scope}
+The purpose is to establish a reusable mathematical description before
+optimizing or integrating the model into a hardware control loop. The reviewed
+files were not modified. The numerical checks in Section~\ref{sec:verification}
+verify internal consistency; they do not constitute experimental validation
+of the fitted field or bead dynamics.
+
+The acceleration is denoted by $g_n(r,\thv)$, corresponding to $g(r,\theta)$
+in the existing \textit{Homotopy method - Analysis} control discussion.
+Its Jacobians retain the notation $G_r$ and $G_\theta$.
+\begin{center}
+\begin{tabular}{L{0.30\linewidth}L{0.62\linewidth}}
+\toprule
+Item & Reviewed implementation\\
+\midrule
+Active model & \code{model_sel = 0}: fitted multiple-source model\\
+Inputs & $r\in\R^2$ in metres; $\thv\in\R^6$ in radians\\
+Outputs & $g_n\in\R^2$, $G_r\in\R^{2\times2}$,
+          $G_\theta\in\R^{2\times6}$\\
+Geometry & Six identical local source models, rotated and translated\\
+Data & 144 source positions and 144 signed coefficients per magnet\\
+Checks & MATLAB R2021b; supplied functions and data\\
+Open conventions & Unscaled field units and model-to-GUI angle zero\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\clearpage
+\section{Notation, geometry, and coordinate transforms}
+\label{sec:geometry}
+The bead position and permanent-magnet configuration are
+\begin{equation}
+r=\begin{bmatrix}r_1\\r_2\end{bmatrix}\in\R^2,\qquad
+\thv=\begin{bmatrix}\theta_1&\cdots&\theta_6\end{bmatrix}^{T}\in\R^6.
+\label{eq:inputs}
+\end{equation}
+Subscript $k$ identifies a physical magnet; subscript $j$ identifies an
+effective source inside one magnet's local model. All trigonometric
+calculations use radians.
+
+For $n=6$, fixed placement angles and global magnet centres are
+\begin{equation}
+\phi_k=\frac{2\pi(k-1)}{n},\qquad
+\rho_k=(a+b)\begin{bmatrix}\cos\phi_k\\\sin\phi_k\end{bmatrix},
+\qquad k=1,\ldots,n.
+\label{eq:centres}
+\end{equation}
+The supplied geometry has $a=34.3\,\mathrm{mm}$ and $b=9.75\,\mathrm{mm}$, hence
+$\|\rho_k\|=44.05\,\mathrm{mm}$. Magnet 1 lies on positive global $r_1$;
+positive global $r_2$ lies between magnets 2 and 3.
+
+Define the orientation, relative global position, and local position by
+\begin{equation}
+\alpha_k=\phi_k+\theta_k,\qquad p_k=r-\rho_k,\qquad
+w_k=R_kp_k,\qquad R_k=R(\alpha_k),
+\label{eq:local-position}
+\end{equation}
+where the actual matrix in \code{R.m} is
+\begin{equation}
+R(\alpha)=
+\begin{bmatrix}\cos\alpha&\sin\alpha\\-\sin\alpha&\cos\alpha\end{bmatrix}.
+\label{eq:R}
+\end{equation}
+Here $R_k$ transforms global coordinates into the local frame; $R_k^T$
+transforms local vectors into the global frame. Increasing $\theta_k$ rotates
+the physical local axes counterclockwise. The comment in \code{R.m} labels
+the transform in the opposite direction; its matrix and usage determine
+the convention in this report.
+
+The angle derivative is
+\begin{equation}
+R_{\theta,k}:=\frac{\partial R_k}{\partial\theta_k}
+=\begin{bmatrix}-\sin\alpha_k&\cos\alpha_k\\
+-\cos\alpha_k&-\sin\alpha_k\end{bmatrix},
+\qquad \frac{\partial w_k}{\partial\theta_k}=R_{\theta,k}p_k.
+\label{eq:R-derivative}
+\end{equation}
+$R_{\theta,k}$ is an angle derivative, not a time derivative.
+The planar projection and embedding matrices are
+\begin{equation}
+E=\begin{bmatrix}1&0&0\\0&1&0\end{bmatrix},\qquad
+E^T:\R^2\longrightarrow\R^3.
+\label{eq:projection}
+\end{equation}
+Embedding a point as $E^Tw=[w_1,w_2,0]^T$ retains three-dimensional distances
+to the sources; it does not discard their heights.
+\source{parametersGen.m, R.m, hn_field.m, Hn.m}
+
+\section{Single-magnet field and analytical derivatives}
+\label{sec:local-field}
+\subsection{Fitted multiple-source field}
+Let $\rho_j^c\in\R^3$ and $a_j\in\R$ be the local source positions and
+coefficients in \code{par.rho} and \code{par.ak_comp}. Superscript $c$
+distinguishes these positions from the global centres $\rho_k$.
+For $N=144$, the field at a local point $p\in\R^3$ is
+\begin{equation}
+\boxed{h_c(p)=\sum_{j=1}^{N}a_j
+\frac{p-\rho_j^c}{\|p-\rho_j^c\|^3}.}
+\label{eq:hc}
+\end{equation}
+These are effective fitted sources, not physical free magnetic monopoles.
+The code's name \textit{complex model} means this multiple-source
+representation. All stored positions and coefficients are real-valued doubles.
+The planar field used subsequently is
+\begin{equation}
+\bar h_c(w):=E h_c(E^Tw),\qquad w\in\R^2.
+\label{eq:hc-planar}
+\end{equation}
+Although the header of \code{h_c.m} mentions a $2\times1$ input, the active
+implementation is called with a $3\times1$ input and returns a $3\times1$
+field. Its optional second output is $\|h_c(p)\|$.
+
+\subsection{First spatial derivative}
+For each source, define
+\begin{equation}
+q_j=E^Tw-\rho_j^c,\qquad u_j=Eq_j,\qquad d_j=\|q_j\|.
+\label{eq:source-offset}
+\end{equation}
+For $d_j>0$, differentiation gives
+\begin{equation}
+\boxed{H_c(w):=\frac{\partial\bar h_c}{\partial w}
+=\sum_{j=1}^{N}a_j
+\left(\frac{I_2}{d_j^3}-\frac{3u_ju_j^T}{d_j^5}\right).}
+\label{eq:Hc}
+\end{equation}
+This is the upper-left planar block of the three-dimensional Jacobian
+assembled in \code{Hc.m}. Each summand is symmetric, so $H_c=H_c^T$.
+
+\subsection{Second spatial derivative}
+The derivative tensor of $H_c$ has components
+\begin{align}
+\frac{\partial(H_c)_{ab}}{\partial w_\ell}
+=\sum_{j=1}^{N}a_j\bigg[
+&-\frac{3}{d_j^5}
+\left(\delta_{ab}u_{j\ell}+\delta_{a\ell}u_{jb}
++\delta_{b\ell}u_{ja}\right)\notag\\
+&+\frac{15u_{ja}u_{jb}u_{j\ell}}{d_j^7}\bigg],
+\qquad a,b,\ell\in\{1,2\}.
+\label{eq:Tc-components}
+\end{align}
+$\delta_{ab}$ is the Kronecker delta. The function \code{dvecHcdw.m} returns
+\begin{equation}
+D_c(w):=\frac{\partial\,\vct H_c(w)}{\partial w}\in\R^{4\times2},
+\quad \vct H_c=
+\begin{bmatrix}
+(H_c)_{11}&(H_c)_{21}&(H_c)_{12}&(H_c)_{22}
+\end{bmatrix}^{T}.
+\label{eq:Dc}
+\end{equation}
+Vectorization follows MATLAB's column-wise convention.
+Define the directional derivative
+\begin{equation}
+\mathcal T_c(w)[v]:=
+\sum_{\ell=1}^{2}\frac{\partial H_c(w)}{\partial w_\ell}v_\ell,
+\qquad \vct\bigl(\mathcal T_c(w)[v]\bigr)=D_c(w)v.
+\label{eq:directional-T}
+\end{equation}
+An equivalent expression using two-dimensional vectors is
+\begin{align}
+\mathcal T_c(w)[v]=\sum_{j=1}^{N}a_j\bigg[
+&-\frac{3}{d_j^5}\left((u_j^Tv)I_2+vu_j^T+u_jv^T\right)\notag\\
+&+\frac{15(u_j^Tv)}{d_j^7}u_ju_j^T\bigg].
+\label{eq:Tc-directional}
+\end{align}
+This exposes the analytical operations without constructing a
+three-dimensional tensor. All formulas assume the evaluation point does not
+coincide with an effective source.
+\source{h_c.m, Hc.m, dvecHcdw.m}
+
+\section{Combined field, scaling, and magnetic acceleration}
+\label{sec:acceleration}
+The force-per-mass coefficient is
+\begin{equation}
+k_g=\frac{\chi}{2\mu_0\rho_{\mathrm{Fe}}(1+\chi/3)},
+\qquad s=\sqrt{2k_g}.
+\label{eq:kg}
+\end{equation}
+The supplied values are $\chi=1000$, $\mu_0=4\pi\times10^{-7}$ in SI units,
+and $\rho_{\mathrm{Fe}}=7800\,\mathrm{kg/m^3}$, giving
+$k_g\approx152.5759$. The force coefficient satisfies $k_m=m_pk_g$, where
+$m_p$ is particle mass; $m_p$ therefore cancels from $k_g$ in this model.
+
+Define the unscaled planar combined field as
+\begin{equation}
+h_{\mathrm{raw}}(r,\thv)=\sum_{k=1}^{n}R_k^T\bar h_c(w_k).
+\label{eq:raw-field}
+\end{equation}
+The output of \code{hn_field.m} is the scaled field
+\begin{equation}
+\boxed{h_n(r,\thv)=s\,h_{\mathrm{raw}}(r,\thv).}
+\label{eq:hn}
+\end{equation}
+Its position Jacobian, returned by \code{Hn.m}, is
+\begin{equation}
+\boxed{H_n(r,\thv)=\frac{\partial h_n}{\partial r}
+=s\sum_{k=1}^{n}R_k^TH_c(w_k)R_k.}
+\label{eq:Hn}
+\end{equation}
+Equation~\eqref{eq:Hc} implies $H_n=H_n^T$ for the active model.
+The acceleration in \code{gn_field.m} is
+\begin{equation}
+\boxed{g_n(r,\thv)=H_n(r,\thv)h_n(r,\thv).}
+\label{eq:gn}
+\end{equation}
+For a general vector field, the gradient of half its squared norm is
+$H_n^Th_n$. Symmetry gives
+\begin{equation}
+g_n=\nabla_r\left(\frac12\|h_n\|^2\right)
+=k_g\nabla_r\|h_{\mathrm{raw}}\|^2.
+\label{eq:energy-gradient}
+\end{equation}
+Thus the implementation uses the gradient of the \emph{squared} field norm.
+There is no division by $\|h_n\|$.
+
+Only the planar field enters Equation~\eqref{eq:energy-gradient}. A full
+three-dimensional field-energy gradient would also contain the third
+component's contribution. Neglecting that component is part of the
+transverse-plane model and should be retained deliberately in a translation.
+
+These routines provide magnetic acceleration only. In a dynamics model
+\begin{equation}
+\dot r=v,\qquad \dot v=-\sigma_vv+g_n(r,\thv),
+\label{eq:translation-context}
+\end{equation}
+drag is evaluated separately; \code{gn_field.m} does not apply
+\code{par.sigma_v}.
+
+\source{parametersGen.m, hn_field.m, Hn.m, gn_field.m}
+
+\section{Analytical acceleration Jacobians}
+\label{sec:jacobians}
+\subsection{Chain rule in matrix form}
+Define
+\begin{equation}
+G_r:=\frac{\partial g_n}{\partial r}\in\R^{2\times2},\qquad
+G_\theta:=\frac{\partial g_n}{\partial\thv}\in\R^{2\times6}.
+\label{eq:jac-definitions}
+\end{equation}
+Let $e_\ell$ be column $\ell$ of $I_2$ and let
+$v_{\theta,k}=R_{\theta,k}p_k$. Only magnet $k$ depends on $\theta_k$, so
+\begin{equation}
+\frac{\partial h_n}{\partial\theta_k}
+=s\left[R_{\theta,k}^T\bar h_c(w_k)
++R_k^TH_c(w_k)v_{\theta,k}\right].
+\label{eq:dh-angle}
+\end{equation}
+The first term rotates the field vector; the second accounts for the changing
+local evaluation point. The derivative of the combined field Jacobian is
+\begin{align}
+\frac{\partial H_n}{\partial\theta_k}
+=s\big[
+&R_{\theta,k}^TH_c(w_k)R_k
++R_k^TH_c(w_k)R_{\theta,k}\notag\\
+&+R_k^T\mathcal T_c(w_k)[v_{\theta,k}]R_k\big].
+\label{eq:dH-angle}
+\end{align}
+For position derivatives, the orientations are fixed:
+\begin{equation}
+\frac{\partial H_n}{\partial r_\ell}
+=s\sum_{k=1}^{n}R_k^T\mathcal T_c(w_k)[R_ke_\ell]R_k,
+\qquad \ell=1,2.
+\label{eq:dH-position}
+\end{equation}
+The product rule applied to Equation~\eqref{eq:gn} yields
+\begin{equation}
+\boxed{(G_\theta)_{:,k}
+=\frac{\partial H_n}{\partial\theta_k}h_n
++H_n\frac{\partial h_n}{\partial\theta_k}.}
+\label{eq:Gtheta-columns}
+\end{equation}
+Similarly,
+\begin{equation}
+\boxed{G_r=H_n^2+
+\begin{bmatrix}
+\dfrac{\partial H_n}{\partial r_1}h_n&
+\dfrac{\partial H_n}{\partial r_2}h_n
+\end{bmatrix}.}
+\label{eq:Gr-columns}
+\end{equation}
+All derivatives in these expressions are analytical.
+
+\subsection{Correspondence with the vectorized implementation}
+Introduce
+\begin{equation}
+B_\theta=\frac{\partial h_n}{\partial\thv},\qquad
+D_r=\frac{\partial\,\vct H_n}{\partial r},\qquad
+D_\theta=\frac{\partial\,\vct H_n}{\partial\thv}.
+\label{eq:vectorized-definitions}
+\end{equation}
+Their shapes are $2\times6$, $4\times2$, and $4\times6$, respectively.
+The final two lines of \code{gan_linear.m} are
+\begin{align}
+\boxed{G_r=H_n^2+(I_2\otimes h_n^T)D_r,}
+\label{eq:Gr-vectorized}\\
+\boxed{G_\theta=H_nB_\theta+(I_2\otimes h_n^T)D_\theta.}
+\label{eq:Gtheta-vectorized}
+\end{align}
+For a $2\times2$ matrix $A$, $(I_2\otimes h^T)\vct A=A^Th$. Derivatives of
+$H_n$ are symmetric for the active model, making these contractions identical
+to Equations~\eqref{eq:Gtheta-columns} and \eqref{eq:Gr-columns}.
+
+The rotation-vector derivatives use the same column-wise convention:
+\begin{align}
+\frac{\partial\,\vct R_k}{\partial\theta_k}
+&=\begin{bmatrix}
+-\sin\alpha_k&-\cos\alpha_k&\cos\alpha_k&-\sin\alpha_k
+\end{bmatrix}^{T},
+\label{eq:vec-R-derivative}\\
+\frac{\partial\,\vct R_k^T}{\partial\theta_k}
+&=\begin{bmatrix}
+-\sin\alpha_k&\cos\alpha_k&-\cos\alpha_k&-\sin\alpha_k
+\end{bmatrix}^{T}.
+\label{eq:vec-RT-derivative}
+\end{align}
+For later control development,
+\begin{equation}
+\mathrm{d}g_n=G_r\,\mathrm{d}r+G_\theta\,\mathrm{d}\thv,\qquad
+\dot g_n=G_r\dot r+G_\theta\dot\thv.
+\label{eq:control-chain-rule}
+\end{equation}
+These identities describe sensitivity of the acceleration map; they do not
+specify a control law.
+\source{gan_linear.m, dvecHcdw.m}
+
+\section{Parameter dependencies and units}
+\label{sec:parameters}
+With the complex model selected, the numerical kernel directly needs:
+\begin{center}
+\begin{tabular}{L{0.27\linewidth}L{0.16\linewidth}L{0.47\linewidth}}
+\toprule
+Parameter & Shape & Purpose\\
+\midrule
+\code{n} & scalar, 6 & Physical magnet count\\
+\code{phi_rad} & $6\times1$ & Fixed placement angles\\
+\code{rho_k_rad} & $6\times2$ & Global magnet centres stored by row\\
+\code{kg} & scalar & Field-to-acceleration coefficient\\
+\code{rho} & $3\times144$ & Local effective source positions\\
+\code{ak_comp} & $144\times1$ & Signed effective source coefficients\\
+\bottomrule
+\end{tabular}
+\end{center}
+\code{model_sel} is also consulted by the current functions. It can become a
+configuration choice if separate model implementations are introduced.
+The optional dipole branch additionally uses \code{m} and \code{ak_dipole}.
+
+The constants $a,b,\mu_0,\chi,\rho_{\mathrm{Fe}}$ are needed indirectly during
+initialization of the centres and $k_g$. Controller gains, trajectories,
+actuator dynamics, \code{delta_r}, \code{delta_th}, and drag parameters are not
+used by the active field/Jacobian calculation. Particle radius and mass do
+not appear after $k_g$ is formed under the supplied material model.
+
+The following dimensions apply if the unscaled field is magnetic flux density
+in tesla, as suggested by Equation~\eqref{eq:kg}:
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Quantity & Units\\
+\midrule
+$r,\rho_k,\rho_j^c$ & $\mathrm{m}$\\
+$\theta_k,\phi_k$ & $\mathrm{rad}$\\
+$h_c,\bar h_c,h_{\mathrm{raw}}$ & $\mathrm{T}$\\
+$a_j$ & $\mathrm{T\,m^2}$\\
+$k_g$ & $\mathrm{m^2\,s^{-2}\,T^{-2}}$\\
+$h_n,\ H_n$ & $\mathrm{m\,s^{-1}},\ \mathrm{s^{-1}}$\\
+$g_n,\ G_r$ & $\mathrm{m\,s^{-2}},\ \mathrm{s^{-2}}$\\
+$G_\theta$ & $\mathrm{m\,s^{-2}\,rad^{-1}}$\\
+\bottomrule
+\end{tabular}
+\end{center}
+The scaled field $h_n$ is not dimensionless. Confirmation of the unscaled
+field units is required before accepting the physical interpretation.
+
+\section{Numerical consistency checks}
+\label{sec:verification}
+Read-only checks used the supplied functions in MATLAB R2021b with
+\code{par = parametersGen()} and \code{par.model_sel = 0}. Central differences
+served only as a verification tool; they are not part of the model evaluation.
+
+With \code{rng(17)}, twelve configurations were generated in this order:
+\begin{equation}
+r^{(i)}=0.025\sqrt{\eta_i}
+\begin{bmatrix}\cos(2\pi i/12)\\\sin(2\pi i/12)\end{bmatrix},\qquad
+\thv^{(i)}=2.5(2\xi_i-\mathbf 1).
+\label{eq:validation-samples}
+\end{equation}
+For each $i=1,\ldots,12$, $\eta_i$ is one call to \code{rand} and $\xi_i$ is
+the following call to \code{rand(6,1)}. Positions lie within a
+$25\,\mathrm{mm}$ radius; magnet angles lie in $[-2.5,2.5]$ radians.
+
+The finite-difference columns were
+\begin{align}
+(G_r^{\mathrm{FD}})_{:,\ell}
+&=\frac{g_n(r+\epsilon_re_\ell,\thv)
+-g_n(r-\epsilon_re_\ell,\thv)}{2\epsilon_r},
+\label{eq:fd-r}\\
+(G_\theta^{\mathrm{FD}})_{:,k}
+&=\frac{g_n(r,\thv+\epsilon_\theta e_k^{(6)})
+-g_n(r,\thv-\epsilon_\theta e_k^{(6)})}{2\epsilon_\theta}.
+\label{eq:fd-theta}
+\end{align}
+Here $e_k^{(6)}$ is column $k$ of $I_6$, $\epsilon_r=10^{-7}\,\mathrm{m}$,
+and $\epsilon_\theta=10^{-6}\,\mathrm{rad}$.
+Relative discrepancy was measured by
+\begin{equation}
+\varepsilon_A=
+\frac{\|A_{\mathrm{analytic}}-A_{\mathrm{FD}}\|_F}
+{\max(\|A_{\mathrm{FD}}\|_F,\varepsilon_{\mathrm{mach}})}.
+\label{eq:relative-error}
+\end{equation}
+\begin{center}
+\begin{tabular}{L{0.15\linewidth}L{0.47\linewidth}r}
+\toprule
+Quantity & Check domain & Relative discrepancy\\
+\midrule
+$G_r$ & Maximum over 12 configurations & $1.63\times10^{-10}$\\
+$G_\theta$ & Maximum over 12 configurations & $7.57\times10^{-10}$\\
+$H_c$ & $w=[-0.04,\ 0.006]^T\,\mathrm{m}$ & $4.08\times10^{-11}$\\
+$D_c$ & Same local point & $5.34\times10^{-11}$\\
+\bottomrule
+\end{tabular}
+\end{center}
+The local checks differentiated $\bar h_c$ and $\vct H_c$ using the same
+spatial step. They are single-point checks, not twelve distinct local points.
+These results support internal derivative consistency at the tested points;
+they do not establish a uniform error bound, physical field accuracy, or
+hardware tracking performance.
+
+\section{Implementation findings and opportunities}
+\label{sec:implementation}
+\subsection{Repeated work in the active model}
+One call to \code{gan_linear} evaluates \code{Hn} and \code{hn_field}, then
+runs another per-magnet loop containing \code{Hc}, \code{h_c}, and
+\code{dvecHcdw}. Consequently:
+\begin{itemize}
+\item \code{Hc} and \code{h_c} are each evaluated 12 times, and
+      \code{dvecHcdw} is evaluated six times.
+\item Source offsets, norms, rotations, and inverse-distance powers are
+      recalculated in multiple helpers.
+\item \code{Hc} builds a $144\times144$ diagonal matrix for a weighted
+      outer-product sum; direct weighted accumulation avoids that matrix.
+\item The angle derivatives build identity matrices, selector vectors,
+      Kronecker products, and intermediate arrays for small fixed outputs.
+\item \code{h_c} calculates the norm output even when only the field is used.
+\end{itemize}
+A shared analytical evaluator returning $g_n,G_r,G_\theta$ can reuse these
+quantities. No speedup has yet been measured. The approximately
+$7\,\mathrm{ms}$ Jacobian time was reported by the user and has not been
+re-benchmarked or separated into individual costs in this review.
+
+Source positions and coefficients can be loaded once, and constants such as
+$\sqrt{2k_g}$ can be formed during initialization. Fixed dimensions are
+available for the supplied six-magnet, 144-source configuration.
+
+\subsection{Inactive dipole branch}
+The dipole field in \code{h_c.m} is
+\begin{equation}
+h_{\mathrm{dip}}(p)=a_d\left[
+\frac{3(m^Tp)p}{\|p\|^5}-\frac{m}{\|p\|^3}\right],
+\qquad m=\begin{bmatrix}1&0&0\end{bmatrix}^{T},
+\label{eq:dipole-field}
+\end{equation}
+with $a_d\approx4.8169\times10^{-7}$ from \code{dipole_model_dat.mat}.
+For the planar dipole, $\bar m=Em$, its first derivative should be
+\begin{equation}
+H_{\mathrm{dip}}(w)=3a_d\left[
+\frac{w\bar m^T+\bar m w^T+(\bar m^Tw)I_2}{\|w\|^5}
+-\frac{5(\bar m^Tw)ww^T}{\|w\|^7}\right].
+\label{eq:dipole-correct-derivative}
+\end{equation}
+The existing \code{Hc.m} dipole branch is not this derivative. At
+$w=[-0.04,\ 0.006]^T\,\mathrm{m}$, its relative discrepancy from a central
+difference of \code{h_c} was approximately $0.385$, and its Jacobian was not
+symmetric. The \code{model_sel = 1} branch of \code{dvecHcdw.m} also uses the
+complex-model source data.
+
+Equation~\eqref{eq:dipole-correct-derivative} records the mathematical
+comparison; no fix has been applied. The default \code{model_sel = 0} does
+not select these inconsistent branches.
+
+\section{Decisions before control-loop integration}
+\label{sec:decisions}
+\begin{enumerate}
+\item \textbf{Model scope.} Confirm whether production work should initially
+      support only the verified complex-model branch.
+\item \textbf{Angle zero and pole direction.} At $\theta_k=0$, local positive
+      $x$ points radially outward. The fitted source first moment is mainly
+      along local positive $x$. The GUI depicts North inward at zero;
+      confirm the intended physical mapping and any angular offset.
+\item \textbf{Physical field units.} Confirm that the unscaled \code{h_c}
+      output is magnetic flux density $B$ in tesla. The coefficient $k_g$
+      supports this interpretation rather than field strength in amperes
+      per metre.
+\item \textbf{Timing budget.} Confirm whether the reported $7\,\mathrm{ms}$
+      covers only \code{gan_linear} with a preinitialized parameter structure,
+      and specify how many field/Jacobian evaluations one control update needs.
+\end{enumerate}
+The model applies the same fitted sources to all six magnets.
+Per-magnet differences, if required by calibration, need an explicit extension
+of the data representation.
+
+The GUI reports positions in millimetres and motor angles in degrees.
+The model boundary must convert
+\begin{equation}
+r_{\mathrm{m}}=10^{-3}r_{\mathrm{mm}},\qquad
+\thv_{\mathrm{rad}}=\frac{\pi}{180}\thv_{\mathrm{deg}},
+\label{eq:unit-boundary}
+\end{equation}
+in addition to the confirmed coordinate and angle-zero transforms.
+Sensitivities with respect to displayed units follow the chain rule:
+\begin{equation}
+\frac{\partial g_n}{\partial r_{\mathrm{mm}}}=10^{-3}G_r,\qquad
+\frac{\partial g_n}{\partial\thv_{\mathrm{deg}}}
+=\frac{\pi}{180}G_\theta.
+\label{eq:jacobian-unit-boundary}
+\end{equation}
+Any reversal of the displayed workspace axes must be handled consistently
+when converting to the fixed model frame.
+
+Servo bias correction also belongs at the interface: the controller uses
+magnet angles relative to the configured zero, and the corresponding bias is
+added once when converting a commanded angle into a raw servo goal. The
+unresolved pole-orientation offset must not be silently confused with encoder
+bias.
+
+\appendix
+\section{Reference data and source traceability}
+\label{sec:provenance}
+The supplied MAT files contain:
+\begin{center}
+\begin{tabular}{L{0.47\linewidth}L{0.44\linewidth}}
+\toprule
+Quantity & Value\\
+\midrule
+Complex-model source array & $3\times144$ real doubles\\
+Complex-model coefficient array & $144\times1$ real doubles\\
+Source $x$ and $y$ extents & Approximately $\pm8.8271\,\mathrm{mm}$\\
+Source $z$ extent & $\pm9.5\,\mathrm{mm}$\\
+Distinct source $z$ levels & Nine; spacing $2.375\,\mathrm{mm}$\\
+Coefficient minimum / maximum &
+  $-1.0802140\times10^{-6}$ / $1.0818149\times10^{-6}$\\
+Coefficient sum & $5.0963\times10^{-10}$\\
+\bottomrule
+\end{tabular}
+\end{center}
+The local first moment is
+\begin{equation}
+\sum_{j=1}^{144}a_j\rho_j^c
+\approx\begin{bmatrix}
+4.97344\times10^{-7}\\
+-2.66832\times10^{-12}\\
+-6.73725\times10^{-12}
+\end{bmatrix}.
+\label{eq:source-first-moment}
+\end{equation}
+The nonzero coefficient sum is recorded as supplied; this review does not
+impose exact antisymmetry or alter fitted values.
+
+\begin{center}
+\small
+\begin{tabular}{L{0.32\linewidth}L{0.33\linewidth}L{0.25\linewidth}}
+\toprule
+File & Role & SHA-256 prefix\\
+\midrule
+\code{parametersGen.m} & Initialization and data loading & \code{af5187bc3eff51f8}\\
+\code{R.m} & Coordinate rotation & \code{a163061a87037f02}\\
+\code{h_c.m} & Local three-dimensional field & \code{59a62c8f04bcaed4}\\
+\code{Hc.m} & Local planar field Jacobian & \code{b2b00644eb4a0dc0}\\
+\code{dvecHcdw.m} & Local second spatial derivative & \code{14799653b044de62}\\
+\code{hn_field.m} & Scaled combined planar field & \code{8f8199a5b1e02746}\\
+\code{Hn.m} & Combined field Jacobian & \code{aa62f606972fe9a2}\\
+\code{gn_field.m} & Magnetic acceleration & \code{6ec10d8a7de93aa1}\\
+\code{gan_linear.m} & Acceleration Jacobians & \code{9bc1221ad9bd593c}\\
+\code{complex_model_dat.mat} & Fitted sources and coefficients & \code{272ce8c57cb58148}\\
+\code{dipole_model_dat.mat} & Dipole coefficient & \code{0790869d7af10a17}\\
+\bottomrule
+\end{tabular}
+\end{center}
+Fingerprints are the first 16 hexadecimal digits of each file's SHA-256 hash.
+They were computed on the report date from \code{scr/_control/__refmod}. The filenames,
+equations, and fingerprints identify this reference independently of later
+optimization work.
+
+\section{Reuse in program documentation}
+Sections~\ref{sec:geometry}--\ref{sec:jacobians} form the mathematical model
+description. Section~\ref{sec:parameters} specifies kernel data and units.
+Sections~\ref{sec:verification}--\ref{sec:decisions} record the current evidence,
+implementation findings, and unresolved decisions; they should be updated when
+native implementation or physical calibration is introduced.
+
+The LaTeX source is self-contained: it has no external figures, bibliography
+database, or generated equation fragments. Equation labels may be retained
+when these sections are incorporated into a larger software description.
+\end{document}
