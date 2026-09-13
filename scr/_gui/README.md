@@ -33,6 +33,10 @@ future control loop. `fastResultReady` is emitted after every processed frame;
 `visualizationResultReady` is rate-limited for the GUI. Results are represented
 as a collection and the detector can return up to two objects, although the
 current application deliberately requests one object.
+Each full-rate `TrackedObject` now includes `positionMillimeters`, computed
+from the active camera's distance calibration and current axis directions.
+Changing the calibration, camera view, or axis direction updates the worker's
+lightweight coordinate transform; it does not change the GUI refresh limit.
 
 ## Actuator communication
 
@@ -78,9 +82,22 @@ automatically when the GUI closes.
 - Trace color palette
 - Typed or arrow-adjustable trace line width
 - Show Axis toggle with x/y buttons to reverse each positive workspace direction
+- Real Distance calibration with a Distance field (60 mm by default)
 
 The selected positive x/y directions are saved and restored after restarting
 the application. The axes remain hidden until **Show Axis** is enabled.
+
+Turn on **Real Distance** to show the P1/P2 green cross markers. Right-click
+inside the circular workspace to place P1, then right-click again to place P2;
+further clicks continue alternating. Enter the known P1-to-P2 separation in
+the enabled **Distance** field. The default P1/P2 markers and 60 mm value
+provide an active initial calibration even before this button is used; changes
+to points or distance take effect immediately. The System Status position is
+shown in millimetres relative
+to the workspace centre and the current x/y axis directions. The markers and
+distance are stored separately for each camera source and restored when that
+source is selected again, including after restarting the application. Turn
+**Real Distance** on to inspect or revise them.
 
 While **Maximum object area** is being edited, a translucent red circle with
 the configured pixel area is drawn over the detected object. The preview is

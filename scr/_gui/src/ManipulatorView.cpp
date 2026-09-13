@@ -18,6 +18,7 @@
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QSpinBox>
+#include <QTransform>
 #include <QUrl>
 #include <QVideoFrame>
 
@@ -180,13 +181,16 @@ ManipulatorView::ManipulatorView(QWidget *parent)
             this, [this](int value) {
         m_imageZoomPercent = value;
         clampImagePan();
+        updateFastPositionCalibration();
         saveCameraViewSettings();
         update();
     });
 
     loadCameraViewSettings(QStringLiteral("webcam:default"));
+    loadDistanceCalibration(QStringLiteral("webcam:default"));
     m_cameraClock.start();
     m_imageTracker = new ImageTracker(this);
+    updateFastPositionCalibration();
     connect(m_imageTracker, &ImageTracker::visualizationResultReady,
             this, &ManipulatorView::receiveTrackingVisualization,
             Qt::QueuedConnection);
@@ -400,9 +404,12 @@ void ManipulatorView::setCameraSource(const QString &sourceId)
         return;
 
     saveCameraViewSettings();
+    saveDistanceCalibration();
     stopCameraSource();
     m_latestDisplayFrame = {};
     loadCameraViewSettings(sourceId);
+    loadDistanceCalibration(sourceId);
+    updateFastPositionCalibration();
     m_objectDetected = false;
     m_hasObjectMeasurement = false;
     m_lastVimbaDisplayNanoseconds.store(0, std::memory_order_release);
@@ -431,6 +438,7 @@ void ManipulatorView::shutdown()
     m_shutdownComplete = true;
 
     saveCameraViewSettings();
+    saveDistanceCalibration();
     disconnect(&m_videoSink, &QVideoSink::videoFrameChanged,
                this, &ManipulatorView::receiveVideoFrame);
     stopCameraSource();
@@ -468,6 +476,7 @@ void ManipulatorView::setCameraRotation(int degrees)
     if (m_cameraRotationDegrees == validatedDegrees)
         return;
     m_cameraRotationDegrees = validatedDegrees;
+    updateFastPositionCalibration();
     update();
 }
 
@@ -487,6 +496,7 @@ void ManipulatorView::flipXAxis()
     QSettings settings;
     settings.setValue(QStringLiteral("workspaceAxes/xPositiveRight"),
                       m_xPositiveRight);
+    updateFastPositionCalibration();
     update();
 }
 
@@ -498,7 +508,67 @@ void ManipulatorView::flipYAxis()
     QSettings settings;
     settings.setValue(QStringLiteral("workspaceAxes/yPositiveUp"),
                       m_yPositiveUp);
+    updateFastPositionCalibration();
     update();
+}
+
+void ManipulatorView::setDistanceCalibrationEditing(bool editing)
+{
+    if (m_distanceCalibrationEditing == editing)
+        return;
+    m_distanceCalibrationEditing = editing;
+    if (editing) {
+        m_nextCalibrationPoint = 0;
+    } else {
+        if (!m_calibrationPointsSet) {
+            m_calibrationPoint1 = widgetToSource(calibrationMarkerPosition(0));
+            m_calibrationPoint2 = widgetToSource(calibrationMarkerPosition(1));
+            m_calibrationPointsSet = true;
+        }
+        saveDistanceCalibration();
+    }
+    updateFastPositionCalibration();
+    update();
+}
+
+void ManipulatorView::setCalibrationDistanceMillimeters(double distance)
+{
+    if (!std::isfinite(distance) || distance <= 0.0)
+        return;
+    m_calibrationDistanceMm = distance;
+    updateFastPositionCalibration();
+    saveDistanceCalibration();
+}
+
+QPointF ManipulatorView::calibratedObjectPosition(
+    const QPointF &normalizedPosition) const
+{
+    // The default marker pair and 60 mm distance are usable immediately,
+    // even before the user enters Real Distance mode for the first time.
+    const QPointF point1 = calibrationMarkerPosition(0);
+    const QPointF point2 = calibrationMarkerPosition(1);
+    const QPointF markerDifference = point2 - point1;
+    const double markerDistance = std::hypot(
+        markerDifference.x(), markerDifference.y());
+    const double scaleDistance = markerDistance >= 1.0
+        ? markerDistance : workspaceCircleRect().width() * 0.9;
+    const QPointF offset = sourceToWidget(normalizedPosition)
+        - workspaceCircleRect().center();
+    const double millimetersPerPixel = m_calibrationDistanceMm / scaleDistance;
+    return QPointF(
+        offset.x() * millimetersPerPixel * (m_xPositiveRight ? 1.0 : -1.0),
+        offset.y() * millimetersPerPixel * (m_yPositiveUp ? -1.0 : 1.0));
+}
+
+void ManipulatorView::updateFastPositionCalibration()
+{
+    if (!m_imageTracker)
+        return;
+    const QPointF origin = calibratedObjectPosition(QPointF(0.0, 0.0));
+    const QPointF xEnd = calibratedObjectPosition(QPointF(1.0, 0.0));
+    const QPointF yEnd = calibratedObjectPosition(QPointF(0.0, 1.0));
+    m_imageTracker->setMillimeterTransform(
+        {origin, xEnd - origin, yEnd - origin});
 }
 
 void ManipulatorView::receiveVideoFrame(const QVideoFrame &frame)
@@ -517,6 +587,7 @@ void ManipulatorView::receiveVideoFrame(const QVideoFrame &frame)
         || m_displayFrameClock.elapsed() >= displayInterval) {
         m_latestDisplayFrame = image;
         clampImagePan();
+        updateFastPositionCalibration();
         m_displayFrameClock.restart();
         update();
     }
@@ -538,6 +609,7 @@ void ManipulatorView::receiveVimbaFrame(const QImage &image,
     QMetaObject::invokeMethod(this, [this, image] {
         m_latestDisplayFrame = image;
         clampImagePan();
+        updateFastPositionCalibration();
         update();
     }, Qt::QueuedConnection);
 }
@@ -654,6 +726,108 @@ QRectF ManipulatorView::workspaceCircleRect() const
                   radius * 2.0, radius * 2.0);
 }
 
+QRectF ManipulatorView::cameraSquareTargetRect() const
+{
+    const QRectF circle = workspaceCircleRect();
+    const double zoom = m_imageZoomPercent / 100.0;
+    const QPointF panOffset = m_imagePanNormalized * (circle.width() * zoom);
+    return QRectF(circle.center().x() - circle.width() * zoom * 0.5
+                      + panOffset.x(),
+                  circle.center().y() - circle.height() * zoom * 0.5
+                      + panOffset.y(),
+                  circle.width() * zoom, circle.height() * zoom);
+}
+
+QPointF ManipulatorView::sourceToWidget(
+    const QPointF &normalizedPosition) const
+{
+    const QRectF target = cameraSquareTargetRect();
+    const QPointF unrotated(target.left() + normalizedPosition.x() * target.width(),
+                            target.top() + normalizedPosition.y() * target.height());
+    const QPointF center = workspaceCircleRect().center();
+    QTransform transform;
+    transform.translate(center.x(), center.y());
+    transform.rotate(-m_cameraRotationDegrees);
+    transform.translate(-center.x(), -center.y());
+    return transform.map(unrotated);
+}
+
+QPointF ManipulatorView::widgetToSource(const QPointF &widgetPosition) const
+{
+    const QPointF center = workspaceCircleRect().center();
+    QTransform transform;
+    transform.translate(center.x(), center.y());
+    transform.rotate(-m_cameraRotationDegrees);
+    transform.translate(-center.x(), -center.y());
+    const QPointF unrotated = transform.inverted().map(widgetPosition);
+    const QRectF target = cameraSquareTargetRect();
+    return QPointF((unrotated.x() - target.left()) / target.width(),
+                   (unrotated.y() - target.top()) / target.height());
+}
+
+QPointF ManipulatorView::calibrationMarkerPosition(int index) const
+{
+    if (m_calibrationPointsSet)
+        return sourceToWidget(index == 0
+            ? m_calibrationPoint1 : m_calibrationPoint2);
+    const QRectF circle = workspaceCircleRect();
+    return circle.center()
+        + unitVector(index == 0 ? 2.0 * pi / 3.0 : 5.0 * pi / 3.0)
+            * (circle.width() * 0.45);
+}
+
+void ManipulatorView::loadDistanceCalibration(const QString &sourceId)
+{
+    const QString sourceKey = QString::fromLatin1(QUrl::toPercentEncoding(sourceId));
+    QSettings settings;
+    settings.beginGroup(QStringLiteral("distanceCalibration/%1").arg(sourceKey));
+    const double storedDistance = settings.value(QStringLiteral("distanceMm"), 60.0).toDouble();
+    m_calibrationDistanceMm = std::isfinite(storedDistance) && storedDistance > 0.0
+        ? storedDistance : 60.0;
+    m_calibrationPointsSet = settings.value(QStringLiteral("pointsSet"), false).toBool();
+    m_calibrationPoint1 = QPointF(
+        settings.value(QStringLiteral("p1x"), 0.0).toDouble(),
+        settings.value(QStringLiteral("p1y"), 0.0).toDouble());
+    m_calibrationPoint2 = QPointF(
+        settings.value(QStringLiteral("p2x"), 0.0).toDouble(),
+        settings.value(QStringLiteral("p2y"), 0.0).toDouble());
+    settings.endGroup();
+    const bool finitePoints = std::isfinite(m_calibrationPoint1.x())
+        && std::isfinite(m_calibrationPoint1.y())
+        && std::isfinite(m_calibrationPoint2.x())
+        && std::isfinite(m_calibrationPoint2.y());
+    if (!finitePoints)
+        m_calibrationPointsSet = false;
+    if (!m_calibrationPointsSet) {
+        // Anchor the initial visible marker pair to the camera image now.
+        // A later GUI zoom must not change millimetres per camera pixel.
+        m_calibrationPoint1 = widgetToSource(calibrationMarkerPosition(0));
+        m_calibrationPoint2 = widgetToSource(calibrationMarkerPosition(1));
+        m_calibrationPointsSet = true;
+        saveDistanceCalibration();
+    }
+    m_nextCalibrationPoint = 0;
+    emit calibrationDistanceLoaded(m_calibrationDistanceMm);
+    update();
+}
+
+void ManipulatorView::saveDistanceCalibration() const
+{
+    if (m_currentCameraSourceId.isEmpty())
+        return;
+    const QString sourceKey = QString::fromLatin1(
+        QUrl::toPercentEncoding(m_currentCameraSourceId));
+    QSettings settings;
+    settings.beginGroup(QStringLiteral("distanceCalibration/%1").arg(sourceKey));
+    settings.setValue(QStringLiteral("distanceMm"), m_calibrationDistanceMm);
+    settings.setValue(QStringLiteral("pointsSet"), m_calibrationPointsSet);
+    settings.setValue(QStringLiteral("p1x"), m_calibrationPoint1.x());
+    settings.setValue(QStringLiteral("p1y"), m_calibrationPoint1.y());
+    settings.setValue(QStringLiteral("p2x"), m_calibrationPoint2.x());
+    settings.setValue(QStringLiteral("p2y"), m_calibrationPoint2.y());
+    settings.endGroup();
+}
+
 void ManipulatorView::loadCameraViewSettings(const QString &sourceId)
 {
     m_currentCameraSourceId = sourceId;
@@ -725,6 +899,28 @@ void ManipulatorView::clampImagePan()
 
 void ManipulatorView::mousePressEvent(QMouseEvent *event)
 {
+    if (m_distanceCalibrationEditing && event->button() == Qt::RightButton) {
+        const QRectF circle = workspaceCircleRect();
+        const QPointF offset = event->position() - circle.center();
+        const double radius = circle.width() * 0.5;
+        if (std::hypot(offset.x(), offset.y()) <= radius) {
+            if (!m_calibrationPointsSet) {
+                m_calibrationPoint1 = widgetToSource(calibrationMarkerPosition(0));
+                m_calibrationPoint2 = widgetToSource(calibrationMarkerPosition(1));
+                m_calibrationPointsSet = true;
+            }
+            if (m_nextCalibrationPoint == 0)
+                m_calibrationPoint1 = widgetToSource(event->position());
+            else
+                m_calibrationPoint2 = widgetToSource(event->position());
+            m_nextCalibrationPoint = 1 - m_nextCalibrationPoint;
+            saveDistanceCalibration();
+            updateFastPositionCalibration();
+            update();
+            event->accept();
+            return;
+        }
+    }
     if (m_panUnlocked && event->button() == Qt::LeftButton
         && workspaceCircleRect().contains(event->position())) {
         m_panningImage = true;
@@ -767,6 +963,7 @@ void ManipulatorView::mouseMoveEvent(QMouseEvent *event)
             1.0, circle.width() * m_imageZoomPercent / 100.0);
         m_imagePanNormalized += unrotatedDelta / normalization;
         clampImagePan();
+        updateFastPositionCalibration();
         update();
         event->accept();
         return;
@@ -809,6 +1006,7 @@ void ManipulatorView::resizeEvent(QResizeEvent *event)
         std::max(margin, height() - m_viewControls->height() - margin));
     m_viewControls->raise();
     clampImagePan();
+    updateFastPositionCalibration();
 }
 
 void ManipulatorView::drawManipulator(QPainter &painter, const QRectF &area)
@@ -1021,6 +1219,25 @@ void ManipulatorView::drawWorkspace(QPainter &painter,
                   QPointF(m_xPositiveRight ? 1.0 : -1.0, 0.0));
         drawArrow(center + QPointF(0.0, m_yPositiveUp ? -extent : extent),
                   QPointF(0.0, m_yPositiveUp ? -1.0 : 1.0));
+        painter.restore();
+    }
+
+    if (m_distanceCalibrationEditing) {
+        painter.save();
+        painter.setClipPath(circularClip);
+        painter.setPen(QPen(QColor("#60e89a"), 2.0,
+                            Qt::SolidLine, Qt::RoundCap));
+        painter.setFont(QFont("Segoe UI", 9, QFont::DemiBold));
+        for (int index = 0; index < 2; ++index) {
+            const QPointF point = calibrationMarkerPosition(index);
+            painter.drawLine(point + QPointF(-5, -5), point + QPointF(5, 5));
+            painter.drawLine(point + QPointF(-5, 5), point + QPointF(5, -5));
+            const QRectF label(point.x() + (index == 0 ? 8.0 : -30.0),
+                               point.y() - 21.0, 26.0, 18.0);
+            painter.drawText(label, Qt::AlignCenter,
+                             index == 0 ? QStringLiteral("P1")
+                                        : QStringLiteral("P2"));
+        }
         painter.restore();
     }
 

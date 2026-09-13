@@ -63,6 +63,12 @@ void ImageTracker::setSettings(const ImageProcessingSettings &settings)
     m_settings = validated;
 }
 
+void ImageTracker::setMillimeterTransform(const MillimeterTransform &transform)
+{
+    QMutexLocker locker(&m_mutex);
+    m_millimeterTransform = transform;
+}
+
 ImageProcessingSettings ImageTracker::settings() const
 {
     QMutexLocker locker(&m_mutex);
@@ -102,6 +108,7 @@ void ImageTracker::run()
         QImage frame;
         qint64 timestampNanoseconds = 0;
         ImageProcessingSettings currentSettings;
+        MillimeterTransform millimeterTransform;
         {
             QMutexLocker locker(&m_mutex);
             while (!m_hasPendingFrame && !m_stopping)
@@ -113,10 +120,17 @@ void ImageTracker::run()
             timestampNanoseconds = m_pendingTimestampNanoseconds;
             m_hasPendingFrame = false;
             currentSettings = m_settings;
+            millimeterTransform = m_millimeterTransform;
         }
 
         TrackingResult result = detectObjects(
             frame, timestampNanoseconds, ++frameId, currentSettings);
+        for (TrackedObject &object : result.objects) {
+            const QPointF position = object.normalizedPosition;
+            object.positionMillimeters = millimeterTransform.origin
+                + millimeterTransform.xStep * position.x()
+                + millimeterTransform.yStep * position.y();
+        }
 
         ++framesInRateWindow;
         const qint64 rateElapsed = rateTimer.elapsed();
@@ -285,4 +299,3 @@ TrackingResult ImageTracker::detectObjects(
     result.detectionMilliseconds = detectionTimer.nsecsElapsed() / 1.0e6;
     return result;
 }
-

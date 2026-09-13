@@ -376,15 +376,15 @@ MainWindow::MainWindow(QWidget *parent)
     statusHeading->setObjectName("panelHeading");
     m_trackingState = new QLabel("SEARCHING FOR OBJECT");
     m_trackingState->setObjectName("trackingState");
-    m_trackingPosition = new QLabel("Visible circular workspace only");
+    m_trackingPosition = new QLabel("x: -- mm   y: -- mm");
     m_trackingPosition->setObjectName("statusDetail");
     m_trackingPerformance = new QLabel("Detector starting...");
     m_trackingPerformance->setObjectName("statusDetail");
     statusLayout->addWidget(statusHeading);
     statusLayout->addSpacing(3);
     statusLayout->addWidget(m_trackingState);
-    statusLayout->addWidget(m_trackingPosition);
     statusLayout->addWidget(m_trackingPerformance);
+    statusLayout->addWidget(m_trackingPosition);
     statusLayout->addStretch();
     rightColumn->addWidget(statusPanel);
 
@@ -684,6 +684,33 @@ MainWindow::MainWindow(QWidget *parent)
     axisControlsLayout->addLayout(axisFlipLayout);
     axisControlsLayout->addWidget(showAxisButton);
 
+    auto *realDistanceButton = new QPushButton("Real Distance");
+    realDistanceButton->setObjectName("realDistanceButton");
+    realDistanceButton->setCheckable(true);
+    realDistanceButton->setFixedSize(96, 28);
+    realDistanceButton->setToolTip(
+        "Right-click two points in the workspace, then enter their real separation");
+    auto *calibrationDistance = new QDoubleSpinBox;
+    calibrationDistance->setRange(0.01, 10000.0);
+    calibrationDistance->setDecimals(2);
+    calibrationDistance->setSingleStep(1.0);
+    calibrationDistance->setValue(
+        m_manipulatorView->calibrationDistanceMillimeters());
+    calibrationDistance->setSuffix(" mm");
+    calibrationDistance->setKeyboardTracking(false);
+    calibrationDistance->setFixedWidth(96);
+    calibrationDistance->setEnabled(false);
+    auto *axisColumn = new QWidget(imageProcessingTab);
+    auto *axisColumnLayout = new QVBoxLayout(axisColumn);
+    axisColumnLayout->setContentsMargins(0, 0, 0, 0);
+    axisColumnLayout->setSpacing(5);
+    axisColumnLayout->addWidget(axisControls, 0, Qt::AlignLeft);
+    axisColumnLayout->addSpacing(5);
+    axisColumnLayout->addWidget(realDistanceButton, 0, Qt::AlignLeft);
+    axisColumnLayout->addWidget(makeFieldLabel("Distance"), 0, Qt::AlignLeft);
+    axisColumnLayout->addWidget(calibrationDistance, 0, Qt::AlignLeft);
+    axisColumnLayout->addStretch();
+
     const std::initializer_list<QWidget *> spinBoxes = {
         threshold,
         cameraRotation,
@@ -700,6 +727,7 @@ MainWindow::MainWindow(QWidget *parent)
     };
     for (QWidget *spinBox : spinBoxes)
         new SpinArrowOverlay(spinBox);
+    new SpinArrowOverlay(calibrationDistance);
 
     // Keep the configuration column compact and leave the rest of the tab open
     // for controls added in later stages.
@@ -736,7 +764,7 @@ MainWindow::MainWindow(QWidget *parent)
     addProcessingControl(3, 1, makeFieldLabel("Trace color"), traceColor);
     addProcessingControl(4, 0, makeFieldLabel("Max Trace Dots"), maximumTraceDots);
     form->addWidget(traceToggle, 9, 1, Qt::AlignLeft | Qt::AlignTop);
-    form->addWidget(axisControls, 0, 2, 10, 1,
+    form->addWidget(axisColumn, 0, 2, 10, 1,
                     Qt::AlignLeft | Qt::AlignTop);
     // Keep the camera settings at the right edge, separate from the axis
     // controls in the third column.
@@ -1106,6 +1134,25 @@ MainWindow::MainWindow(QWidget *parent)
             m_manipulatorView, &ManipulatorView::flipXAxis);
     connect(flipYAxisButton, &QPushButton::clicked,
             m_manipulatorView, &ManipulatorView::flipYAxis);
+    connect(calibrationDistance,
+            qOverload<double>(&QDoubleSpinBox::valueChanged),
+            m_manipulatorView,
+            &ManipulatorView::setCalibrationDistanceMillimeters);
+    connect(m_manipulatorView, &ManipulatorView::calibrationDistanceLoaded,
+            this, [calibrationDistance](double value) {
+        QSignalBlocker blocker(calibrationDistance);
+        calibrationDistance->setValue(value);
+    });
+    connect(realDistanceButton, &QPushButton::toggled,
+            this, [this, calibrationDistance](bool editing) {
+        if (!editing) {
+            calibrationDistance->interpretText();
+            m_manipulatorView->setCalibrationDistanceMillimeters(
+                calibrationDistance->value());
+        }
+        calibrationDistance->setEnabled(editing);
+        m_manipulatorView->setDistanceCalibrationEditing(editing);
+    });
     connect(qApp, &QApplication::focusChanged,
             this, [this, maximumArea](QWidget *, QWidget *focused) {
         const bool editing = focused
@@ -1209,13 +1256,15 @@ MainWindow::MainWindow(QWidget *parent)
         if (detected) {
             m_trackingState->setText("OBJECT DETECTED");
             m_trackingState->setProperty("detected", true);
-            m_trackingPosition->setText(QStringLiteral("Workspace x %1   y %2")
-                .arg(position.x(), 0, 'f', 3)
-                .arg(position.y(), 0, 'f', 3));
+            const QPointF millimeters =
+                m_manipulatorView->calibratedObjectPosition(position);
+            m_trackingPosition->setText(QStringLiteral("x: %1 mm   y: %2 mm")
+                .arg(millimeters.x(), 0, 'f', 2)
+                .arg(millimeters.y(), 0, 'f', 2));
         } else {
             m_trackingState->setText("SEARCHING FOR OBJECT");
             m_trackingState->setProperty("detected", false);
-            m_trackingPosition->setText("Visible circular workspace only");
+            m_trackingPosition->setText("x: -- mm   y: -- mm");
         }
         m_trackingState->style()->unpolish(m_trackingState);
         m_trackingState->style()->polish(m_trackingState);
@@ -1460,7 +1509,8 @@ MainWindow::MainWindow(QWidget *parent)
         QPushButton#traceToggleButton:checked:hover {
             background: #2a8c5d;
         }
-        QPushButton#showAxisButton, QPushButton#axisFlipButton {
+        QPushButton#showAxisButton, QPushButton#axisFlipButton,
+        QPushButton#realDistanceButton {
             background: #0f151d;
             color: #d5dee8;
             border: 1px solid #3b4b5d;
@@ -1469,11 +1519,12 @@ MainWindow::MainWindow(QWidget *parent)
             font-size: 10px;
             font-weight: 700;
         }
-        QPushButton#showAxisButton:hover, QPushButton#axisFlipButton:hover:enabled {
+        QPushButton#showAxisButton:hover, QPushButton#axisFlipButton:hover:enabled,
+        QPushButton#realDistanceButton:hover {
             background: #1a2633;
             border-color: #60758c;
         }
-        QPushButton#showAxisButton:checked {
+        QPushButton#showAxisButton:checked, QPushButton#realDistanceButton:checked {
             background: #237a50;
             color: #f4fff9;
             border-color: #58d99a;

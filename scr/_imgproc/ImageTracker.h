@@ -21,9 +21,20 @@ struct TrackedObject
 {
     int id = 0;
     QPointF normalizedPosition;
+    QPointF positionMillimeters;
     double normalizedRadius = 0.0;
     int areaPixels = 0;
     double circularity = 0.0;
+};
+
+// Maps a position in the camera's normalized square crop to workspace mm.
+// The GUI updates this only when calibration/view settings change; the worker
+// applies it to every detected frame without waiting for a GUI repaint.
+struct MillimeterTransform
+{
+    QPointF origin;
+    QPointF xStep;
+    QPointF yStep;
 };
 
 struct TrackingResult
@@ -51,6 +62,7 @@ public:
 
     void submitFrame(const QImage &frame, qint64 timestampNanoseconds);
     void setSettings(const ImageProcessingSettings &settings);
+    void setMillimeterTransform(const MillimeterTransform &transform);
     ImageProcessingSettings settings() const;
     TrackingResult latestResult() const;
     void stop();
@@ -76,6 +88,6 @@ private:
     bool m_hasPendingFrame = false;
     bool m_stopping = false;
     ImageProcessingSettings m_settings;
+    MillimeterTransform m_millimeterTransform;
     TrackingResult m_latestResult;
 };
-
