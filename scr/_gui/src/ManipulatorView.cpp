@@ -454,6 +454,15 @@ void ManipulatorView::setCameraGamma(double value)
         m_vimbaCamera->setGamma(value);
 }
 
+void ManipulatorView::setCameraRotation(int degrees)
+{
+    const int validatedDegrees = std::clamp(degrees, -360, 360);
+    if (m_cameraRotationDegrees == validatedDegrees)
+        return;
+    m_cameraRotationDegrees = validatedDegrees;
+    update();
+}
+
 void ManipulatorView::receiveVideoFrame(const QVideoFrame &frame)
 {
     const QImage image = frame.toImage();
@@ -712,9 +721,13 @@ void ManipulatorView::mouseMoveEvent(QMouseEvent *event)
         }
         const QPointF delta = event->position() - m_lastPanMousePosition;
         m_lastPanMousePosition = event->position();
+        const double angle = m_cameraRotationDegrees * pi / 180.0;
+        const QPointF unrotatedDelta(
+            std::cos(angle) * delta.x() - std::sin(angle) * delta.y(),
+            std::sin(angle) * delta.x() + std::cos(angle) * delta.y());
         const double normalization = std::max(
             1.0, circle.width() * m_imageZoomPercent / 100.0);
-        m_imagePanNormalized += delta / normalization;
+        m_imagePanNormalized += unrotatedDelta / normalization;
         clampImagePan();
         update();
         event->accept();
@@ -841,6 +854,9 @@ void ManipulatorView::drawWorkspace(QPainter &painter,
     QPainterPath circularClip;
     circularClip.addEllipse(circle);
     painter.setClipPath(circularClip);
+    painter.translate(center);
+    painter.rotate(-m_cameraRotationDegrees);
+    painter.translate(-center);
     QRectF cameraSquareTarget = circle;
     if (!m_latestDisplayFrame.isNull()) {
         const int sourceSide = std::min(

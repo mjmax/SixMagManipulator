@@ -68,6 +68,7 @@ automatically when the GUI closes.
 ## Image Processing controls
 
 - Dark-pixel threshold
+- Camera rotation (-360° to +360°) for the displayed image, trace, and detection overlays; selecting Webcam defaults to 0°, and selecting a Mako/Vimba camera defaults to -30°
 - Minimum and maximum object area
 - Minimum circularity
 - GUI-only refresh rate

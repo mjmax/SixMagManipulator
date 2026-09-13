@@ -617,6 +617,13 @@ MainWindow::MainWindow(QWidget *parent)
     minimumArea->setValue(30);
     minimumArea->setSuffix(" px²");
 
+    auto *cameraRotation = new QSpinBox;
+    cameraRotation->setRange(-360, 360);
+    cameraRotation->setValue(0);
+    cameraRotation->setSuffix("°");
+    cameraRotation->setToolTip(
+        "Rotate the displayed camera image counterclockwise around the workspace center");
+
     auto *maximumArea = new QSpinBox;
     maximumArea->setRange(31, 500000);
     maximumArea->setValue(20000);
@@ -701,6 +708,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     const std::initializer_list<QWidget *> spinBoxes = {
         threshold,
+        cameraRotation,
         minimumArea,
         maximumArea,
         minimumCircularity,
@@ -719,6 +727,7 @@ MainWindow::MainWindow(QWidget *parent)
     // for controls added in later stages.
     constexpr int processingFieldWidth = 96;
     threshold->setFixedWidth(processingFieldWidth);
+    cameraRotation->setFixedWidth(processingFieldWidth);
     minimumArea->setFixedWidth(processingFieldWidth);
     maximumArea->setFixedWidth(processingFieldWidth);
     minimumCircularity->setFixedWidth(processingFieldWidth);
@@ -740,14 +749,15 @@ MainWindow::MainWindow(QWidget *parent)
         };
 
     addProcessingControl(0, 0, makeFieldLabel("Dark threshold"), threshold);
-    addProcessingControl(0, 1, makeFieldLabel("Minimum object area"), minimumArea);
+    addProcessingControl(0, 1, makeFieldLabel("Camera rotation"), cameraRotation);
     addProcessingControl(1, 0, makeFieldLabel("Maximum object area"), maximumArea);
-    addProcessingControl(1, 1, makeFieldLabel("Minimum circularity"), minimumCircularity);
+    addProcessingControl(1, 1, makeFieldLabel("Minimum object area"), minimumArea);
     addProcessingControl(2, 0, makeFieldLabel("GUI refresh rate"), visualizationRate);
-    addProcessingControl(2, 1, makeFieldLabel("Trace color"), traceColor);
+    addProcessingControl(2, 1, makeFieldLabel("Minimum circularity"), minimumCircularity);
     addProcessingControl(3, 0, makeFieldLabel("Trace line width"), traceWidth);
-    form->addWidget(traceToggle, 7, 1, Qt::AlignLeft | Qt::AlignTop);
+    addProcessingControl(3, 1, makeFieldLabel("Trace color"), traceColor);
     addProcessingControl(4, 0, makeFieldLabel("Max Trace Dots"), maximumTraceDots);
+    form->addWidget(traceToggle, 9, 1, Qt::AlignLeft | Qt::AlignTop);
     // Keep the camera group independent of the left-side rows so its controls
     // stay compact. Anchoring at row 2 makes the source field line up exactly
     // with the Maximum object area field in row 3.
@@ -1088,6 +1098,8 @@ MainWindow::MainWindow(QWidget *parent)
     });
     connect(threshold, qOverload<int>(&QSpinBox::valueChanged),
             m_manipulatorView, &ManipulatorView::setDetectionThreshold);
+    connect(cameraRotation, qOverload<int>(&QSpinBox::valueChanged),
+            m_manipulatorView, &ManipulatorView::setCameraRotation);
     connect(minimumArea, qOverload<int>(&QSpinBox::valueChanged),
             this, [this, maximumArea](int value) {
         maximumArea->setMinimum(value + 1);
@@ -1142,12 +1154,13 @@ MainWindow::MainWindow(QWidget *parent)
     connect(maximumTraceDots, qOverload<int>(&QSpinBox::valueChanged),
             m_manipulatorView, &ManipulatorView::setMaximumTraceDots);
     connect(cameraSource, qOverload<int>(&QComboBox::currentIndexChanged),
-            this, [this, cameraSource, cameraExposure,
+            this, [this, cameraSource, cameraRotation, cameraExposure,
                    cameraFeatureEditors](int index) {
         const QString sourceId = cameraSource->itemData(index).toString();
         const bool isVimba = sourceId.startsWith(QStringLiteral("vimba:"));
         for (QDoubleSpinBox *editor : cameraFeatureEditors)
             editor->setEnabled(false);
+        cameraRotation->setValue(isVimba ? -30 : 0);
         m_manipulatorView->setCameraSource(sourceId);
         if (!isVimba) {
             QSignalBlocker blocker(cameraExposure);

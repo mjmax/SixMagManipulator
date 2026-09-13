@@ -61,6 +61,7 @@ public slots:
     void setCameraGain(double value);
     void setCameraBlackLevel(double value);
     void setCameraGamma(double value);
+    void setCameraRotation(int degrees);
     void shutdown();
 
 signals:
@@ -149,4 +150,5 @@ private:
     QString m_currentCameraSourceId;
     double m_objectRadius = 0.0;
     int m_imageZoomPercent = 100;
+    int m_cameraRotationDegrees = 0;
 };
