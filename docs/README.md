@@ -1,5 +1,8 @@
 # Magnetic model review
 
+For the compatible faster simulator functions, usage instructions, and measured
+verification results, see [Optimized MATLAB model](optimized_matlab_model.md).
+
 The self-contained LaTeX source in this directory describes the supplied MATLAB
 reference model, its analytical Jacobians, the numerical verification results,
 implementation findings, and questions to resolve before native control-loop
