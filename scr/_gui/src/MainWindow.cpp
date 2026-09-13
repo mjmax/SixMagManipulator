@@ -180,55 +180,6 @@ private:
     QPointer<QWidget> m_parent;
 };
 
-class TopRightOverlay final : public QObject
-{
-public:
-    TopRightOverlay(QWidget *overlay, QWidget *parent)
-        : QObject(overlay),
-          m_overlay(overlay),
-          m_parent(parent)
-    {
-        m_parent->installEventFilter(this);
-        m_overlay->installEventFilter(this);
-        schedulePosition();
-    }
-
-protected:
-    bool eventFilter(QObject *watched, QEvent *event) override
-    {
-        if ((watched == m_parent || watched == m_overlay)
-            && (event->type() == QEvent::Show
-                || event->type() == QEvent::Move
-                || event->type() == QEvent::Resize
-                || event->type() == QEvent::LayoutRequest)) {
-            schedulePosition();
-        }
-        return QObject::eventFilter(watched, event);
-    }
-
-private:
-    void schedulePosition()
-    {
-        QTimer::singleShot(0, this, [this] {
-            if (!m_overlay || !m_parent)
-                return;
-            if (m_overlay->layout())
-                m_overlay->layout()->activate();
-            m_overlay->adjustSize();
-            const int rightMargin = 10;
-            const int topMargin = 8;
-            m_overlay->move(
-                std::max(0, m_parent->width()
-                    - m_overlay->width() - rightMargin),
-                topMargin);
-            m_overlay->raise();
-        });
-    }
-
-    QPointer<QWidget> m_overlay;
-    QPointer<QWidget> m_parent;
-};
-
 class PortComboBox final : public QComboBox
 {
 public:
@@ -706,6 +657,33 @@ MainWindow::MainWindow(QWidget *parent)
     traceToggle->setChecked(false);
     traceToggle->setToolTip("Enable or disable recording the object's trace path");
 
+    auto *axisControls = new QWidget(imageProcessingTab);
+    axisControls->setFixedSize(87, 57);
+    auto *axisControlsLayout = new QHBoxLayout(axisControls);
+    axisControlsLayout->setContentsMargins(0, 0, 0, 0);
+    axisControlsLayout->setSpacing(3);
+    auto *axisFlipLayout = new QVBoxLayout;
+    axisFlipLayout->setContentsMargins(0, 0, 0, 0);
+    axisFlipLayout->setSpacing(3);
+    auto *flipXAxisButton = new QPushButton("x");
+    auto *flipYAxisButton = new QPushButton("y");
+    for (QPushButton *button : {flipXAxisButton, flipYAxisButton}) {
+        button->setObjectName("axisFlipButton");
+        button->setFixedSize(27, 27);
+        button->setEnabled(false);
+    }
+    flipXAxisButton->setToolTip("Reverse the positive x direction");
+    flipYAxisButton->setToolTip("Reverse the positive y direction");
+    axisFlipLayout->addWidget(flipXAxisButton);
+    axisFlipLayout->addWidget(flipYAxisButton);
+    auto *showAxisButton = new QPushButton("Show\nAxis");
+    showAxisButton->setObjectName("showAxisButton");
+    showAxisButton->setFixedSize(57, 57);
+    showAxisButton->setCheckable(true);
+    showAxisButton->setToolTip("Show or hide the workspace coordinate axes");
+    axisControlsLayout->addLayout(axisFlipLayout);
+    axisControlsLayout->addWidget(showAxisButton);
+
     const std::initializer_list<QWidget *> spinBoxes = {
         threshold,
         cameraRotation,
@@ -758,9 +736,10 @@ MainWindow::MainWindow(QWidget *parent)
     addProcessingControl(3, 1, makeFieldLabel("Trace color"), traceColor);
     addProcessingControl(4, 0, makeFieldLabel("Max Trace Dots"), maximumTraceDots);
     form->addWidget(traceToggle, 9, 1, Qt::AlignLeft | Qt::AlignTop);
-    // Keep the camera group independent of the left-side rows so its controls
-    // stay compact. Anchoring at row 2 makes the source field line up exactly
-    // with the Maximum object area field in row 3.
+    form->addWidget(axisControls, 0, 2, 10, 1,
+                    Qt::AlignLeft | Qt::AlignTop);
+    // Keep the camera settings at the right edge, separate from the axis
+    // controls in the third column.
     auto *cameraControls = new QWidget(imageProcessingTab);
     auto *cameraControlsLayout = new QGridLayout(cameraControls);
     cameraControlsLayout->setContentsMargins(0, 0, 0, 0);
@@ -779,8 +758,9 @@ MainWindow::MainWindow(QWidget *parent)
     addCameraControl(2, makeFieldLabel("Gain"), cameraGain);
     addCameraControl(3, makeFieldLabel("Black level"), cameraBlackLevel);
     addCameraControl(4, makeFieldLabel("Gamma"), cameraGamma);
-    new TopRightOverlay(cameraControls, imageProcessingTab);
     form->setColumnStretch(2, 1);
+    form->addWidget(cameraControls, 0, 3, 10, 1,
+                    Qt::AlignRight | Qt::AlignTop);
     imageLayout->addLayout(form);
 
     imageLayout->addStretch();
@@ -1116,6 +1096,16 @@ MainWindow::MainWindow(QWidget *parent)
             m_manipulatorView->setMaximumAreaPreview(true, value);
         }
     });
+    connect(showAxisButton, &QPushButton::toggled,
+            this, [this, flipXAxisButton, flipYAxisButton](bool visible) {
+        flipXAxisButton->setEnabled(visible);
+        flipYAxisButton->setEnabled(visible);
+        m_manipulatorView->setAxesVisible(visible);
+    });
+    connect(flipXAxisButton, &QPushButton::clicked,
+            m_manipulatorView, &ManipulatorView::flipXAxis);
+    connect(flipYAxisButton, &QPushButton::clicked,
+            m_manipulatorView, &ManipulatorView::flipYAxis);
     connect(qApp, &QApplication::focusChanged,
             this, [this, maximumArea](QWidget *, QWidget *focused) {
         const bool editing = focused
@@ -1469,6 +1459,28 @@ MainWindow::MainWindow(QWidget *parent)
         }
         QPushButton#traceToggleButton:checked:hover {
             background: #2a8c5d;
+        }
+        QPushButton#showAxisButton, QPushButton#axisFlipButton {
+            background: #0f151d;
+            color: #d5dee8;
+            border: 1px solid #3b4b5d;
+            border-radius: 5px;
+            padding: 2px;
+            font-size: 10px;
+            font-weight: 700;
+        }
+        QPushButton#showAxisButton:hover, QPushButton#axisFlipButton:hover:enabled {
+            background: #1a2633;
+            border-color: #60758c;
+        }
+        QPushButton#showAxisButton:checked {
+            background: #237a50;
+            color: #f4fff9;
+            border-color: #58d99a;
+        }
+        QPushButton#axisFlipButton:disabled {
+            color: #627080;
+            border-color: #2b3745;
         }
         QPushButton#clearTraceButton {
             background: #263445;

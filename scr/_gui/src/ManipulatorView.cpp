@@ -57,6 +57,14 @@ ManipulatorView::ManipulatorView(QWidget *parent)
                             QImage::Format_ARGB32_Premultiplied);
     m_traceOverlay.fill(Qt::transparent);
 
+    QSettings axisSettings;
+    axisSettings.beginGroup(QStringLiteral("workspaceAxes"));
+    m_xPositiveRight = axisSettings.value(
+        QStringLiteral("xPositiveRight"), true).toBool();
+    m_yPositiveUp = axisSettings.value(
+        QStringLiteral("yPositiveUp"), true).toBool();
+    axisSettings.endGroup();
+
     m_clearTraceButton = new QPushButton(QStringLiteral("Clear\nTrace"), this);
     m_clearTraceButton->setObjectName("workspaceClearTraceButton");
     m_clearTraceButton->setFixedSize(62, 62);
@@ -460,6 +468,36 @@ void ManipulatorView::setCameraRotation(int degrees)
     if (m_cameraRotationDegrees == validatedDegrees)
         return;
     m_cameraRotationDegrees = validatedDegrees;
+    update();
+}
+
+void ManipulatorView::setAxesVisible(bool visible)
+{
+    if (m_axesVisible == visible)
+        return;
+    m_axesVisible = visible;
+    update();
+}
+
+void ManipulatorView::flipXAxis()
+{
+    if (!m_axesVisible)
+        return;
+    m_xPositiveRight = !m_xPositiveRight;
+    QSettings settings;
+    settings.setValue(QStringLiteral("workspaceAxes/xPositiveRight"),
+                      m_xPositiveRight);
+    update();
+}
+
+void ManipulatorView::flipYAxis()
+{
+    if (!m_axesVisible)
+        return;
+    m_yPositiveUp = !m_yPositiveUp;
+    QSettings settings;
+    settings.setValue(QStringLiteral("workspaceAxes/yPositiveUp"),
+                      m_yPositiveUp);
     update();
 }
 
@@ -959,6 +997,32 @@ void ManipulatorView::drawWorkspace(QPainter &painter,
         }
     }
     painter.restore();
+
+    if (m_axesVisible) {
+        painter.save();
+        painter.setClipPath(circularClip);
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(QPen(QColor("#e4545d"), 1.4));
+        const double extent = radius - 5.0;
+        painter.drawLine(center + QPointF(-extent, 0.0),
+                         center + QPointF(extent, 0.0));
+        painter.drawLine(center + QPointF(0.0, -extent),
+                         center + QPointF(0.0, extent));
+
+        const auto drawArrow = [&painter](const QPointF &tip,
+                                          const QPointF &direction) {
+            const QPointF base = tip - direction * 9.0;
+            const QPointF side(-direction.y() * 4.0,
+                               direction.x() * 4.0);
+            painter.drawLine(tip, base + side);
+            painter.drawLine(tip, base - side);
+        };
+        drawArrow(center + QPointF(m_xPositiveRight ? extent : -extent, 0.0),
+                  QPointF(m_xPositiveRight ? 1.0 : -1.0, 0.0));
+        drawArrow(center + QPointF(0.0, m_yPositiveUp ? -extent : extent),
+                  QPointF(0.0, m_yPositiveUp ? -1.0 : 1.0));
+        painter.restore();
+    }
 
     painter.save();
     painter.setBrush(Qt::NoBrush);

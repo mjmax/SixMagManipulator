@@ -62,6 +62,9 @@ public slots:
     void setCameraBlackLevel(double value);
     void setCameraGamma(double value);
     void setCameraRotation(int degrees);
+    void setAxesVisible(bool visible);
+    void flipXAxis();
+    void flipYAxis();
     void shutdown();
 
 signals:
@@ -142,6 +145,9 @@ private:
     bool m_hasObjectMeasurement = false;
     bool m_panUnlocked = false;
     bool m_panningImage = false;
+    bool m_axesVisible = false;
+    bool m_xPositiveRight = true;
+    bool m_yPositiveUp = true;
     bool m_shutdownComplete = false;
     bool m_objectDetected = false;
     QPointF m_objectPosition;

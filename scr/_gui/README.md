@@ -77,6 +77,10 @@ automatically when the GUI closes.
 - Gain, black-level, and gamma controls
 - Trace color palette
 - Typed or arrow-adjustable trace line width
+- Show Axis toggle with x/y buttons to reverse each positive workspace direction
+
+The selected positive x/y directions are saved and restored after restarting
+the application. The axes remain hidden until **Show Axis** is enabled.
 
 While **Maximum object area** is being edited, a translucent red circle with
 the configured pixel area is drawn over the detected object. The preview is
