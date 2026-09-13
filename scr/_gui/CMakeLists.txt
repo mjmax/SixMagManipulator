@@ -6,7 +6,10 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS
+# Qt checks for optional Vulkan headers while loading Gui. Keep optional
+# package probes quiet; REQUIRED Qt modules still fail if any are missing.
+# If this project starts using Vulkan, add find_package(Vulkan REQUIRED).
+find_package(Qt6 6.5 QUIET REQUIRED COMPONENTS
     Widgets Multimedia Network SerialPort)
 
 qt_standard_project_setup()

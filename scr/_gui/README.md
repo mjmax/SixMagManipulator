@@ -141,7 +141,13 @@ unrestricted speed in joint mode, is never sent for a positive limit. See the
 Qt 6.8.3, Qt Multimedia, Qt SerialPort, CMake, Ninja, and the matching MinGW
 compiler are expected under `utilities/Qt`. Vimba X is expected under
 `utilities/AlliedVision/VimbaX`; see the root README for its driver and API
-setup. From any PowerShell directory, use the scripts by their appropriate
+setup. The GUI uses `QPainter`, not Vulkan, so the Vulkan SDK is not required.
+The CMake configuration keeps Qt's optional Vulkan-header check quiet. If a
+future feature uses Vulkan, add `find_package(Vulkan REQUIRED)` to
+`CMakeLists.txt` and install the Vulkan SDK; a missing SDK will then stop the
+build with a clear error.
+
+From any PowerShell directory, use the scripts by their appropriate
 relative or absolute paths. From the repository root:
 
 ```powershell
