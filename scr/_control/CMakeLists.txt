@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.21)
 project(SixMagControl VERSION 1.0 LANGUAGES CXX)
-add_library(SixMagControl STATIC MagneticModel.cpp MagneticModel.h)
+add_library(SixMagControl STATIC MagneticModel.cpp MagneticModel.h
+    LinearizedPositionControl.cpp LinearizedPositionControl.h
+    ControlLoop.cpp ControlLoop.h
+    FastControlRuntime.cpp FastControlRuntime.h)
 add_library(SixMag::Control ALIAS SixMagControl)
 target_compile_features(SixMagControl PUBLIC cxx_std_17)
 target_include_directories(SixMagControl PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -26,4 +29,8 @@ if(SIXMAG_CONTROL_BUILD_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/reference_cases.csv")
     add_executable(SixMagControlBenchmark tests/NativeModelBenchmark.cpp)
     target_link_libraries(SixMagControlBenchmark PRIVATE SixMag::Control)
+    add_executable(SixMagControllerTests tests/ControlLoopTests.cpp)
+    target_link_libraries(SixMagControllerTests PRIVATE SixMag::Control)
+    add_test(NAME LinearizedControlReference COMMAND SixMagControllerTests
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/control_reference_cases.csv")
 endif()

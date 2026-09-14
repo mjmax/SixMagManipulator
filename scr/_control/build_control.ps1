@@ -27,6 +27,8 @@ try {
     if ($Benchmark) {
         & (Join-Path $BuildDirectory "SixMagControlBenchmark.exe") (Join-Path $ControlDirectory "tests\reference_cases.csv")
         if ($LASTEXITCODE -ne 0) { throw "Control model benchmark failed." }
+        & (Join-Path $BuildDirectory "SixMagControllerTests.exe") (Join-Path $ControlDirectory "tests\control_reference_cases.csv") --benchmark
+        if ($LASTEXITCODE -ne 0) { throw "Control loop benchmark failed." }
     }
 } finally {
     $env:PATH = $PreviousPath
