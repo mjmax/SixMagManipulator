@@ -34,8 +34,8 @@ public:
     double lowerServoAngleLimit() const { return m_lowerServoAngleLimit; }
     double upperServoAngleLimit() const { return m_upperServoAngleLimit; }
 
-    // The future control loop can either read latestResult() without waiting
-    // for the GUI or connect directly to fastResultReady using DirectConnection.
+    // Control runs from fastResultReady on every processed frame; GUI drawing
+    // uses the separate visualization result.
     ImageTracker *imageTracker() const { return m_imageTracker; }
     QVector<VimbaCameraDescriptor> availableVimbaCameras() const;
     double calibrationDistanceMillimeters() const { return m_calibrationDistanceMm; }
@@ -85,6 +85,7 @@ signals:
                              const VimbaFeatureState &gamma);
     void cameraSourceError(const QString &message);
     void calibrationDistanceLoaded(double distanceMillimeters);
+    void positionMappingChanged();
 
 protected:
     void leaveEvent(QEvent *event) override;
@@ -134,6 +135,8 @@ private:
     QMediaCaptureSession m_captureSession;
     QVideoSink m_videoSink;
     ImageTracker *m_imageTracker = nullptr;
+    MillimeterTransform m_lastModelTransform;
+    bool m_hasModelTransform = false;
     QPushButton *m_clearTraceButton = nullptr;
     QWidget *m_viewControls = nullptr;
     QPushButton *m_panLockButton = nullptr;

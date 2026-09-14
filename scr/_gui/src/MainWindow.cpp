@@ -1,8 +1,10 @@
 #include "MainWindow.h"
+#include "ControlPanelNavigation.h"
 
 #include "ManipulatorView.h"
 #include "MotorController.h"
 #include "HallSensorController.h"
+#include "FastControlRuntime.h"
 
 #include <QAbstractSpinBox>
 #include <QApplication>
@@ -24,6 +26,7 @@
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QSplitter>
+#include <QStackedWidget>
 #include <QTabWidget>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -31,6 +34,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <initializer_list>
 #include <utility>
 
 namespace {
@@ -408,6 +412,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_manipulatorView = new ManipulatorView;
     m_motorController = new MotorController(this);
     m_hallSensorController = new HallSensorController(this);
+    m_fastControlRuntime = std::make_unique<sixmag::control::FastControlRuntime>();
     m_manipulatorView->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     content->addWidget(m_manipulatorView, 1);
 
@@ -427,7 +432,7 @@ MainWindow::MainWindow(QWidget *parent)
     statusHeading->setObjectName("panelHeading");
     m_trackingState = new QLabel("SEARCHING FOR OBJECT");
     m_trackingState->setObjectName("trackingState");
-    m_trackingPosition = new QLabel("x: -- mm   y: -- mm");
+    m_trackingPosition = new QLabel("x: 0.00 mm   y: 0.00 mm");
     m_trackingPosition->setObjectName("statusDetail");
     m_trackingPerformance = new QLabel("Detector starting...");
     m_trackingPerformance->setObjectName("statusDetail");
@@ -436,6 +441,18 @@ MainWindow::MainWindow(QWidget *parent)
     statusLayout->addWidget(m_trackingState);
     statusLayout->addWidget(m_trackingPerformance);
     statusLayout->addWidget(m_trackingPosition);
+    auto *loopTimeLabel = new QLabel("Loop time: -- ms");
+    loopTimeLabel->setObjectName("statusDetail");
+    loopTimeLabel->setToolTip("Sampling period between completed motor-command writes, including polling and parallel camera processing");
+    statusLayout->addWidget(loopTimeLabel);
+    auto *endToEndLabel = new QLabel("End-to-end delay: -- ms");
+    endToEndLabel->setObjectName("statusDetail");
+    endToEndLabel->setToolTip("Earlier of frame submission or six-motor poll start to command write completion; excludes exposure and mechanical response");
+    statusLayout->addWidget(endToEndLabel);
+    auto *controlLawTimeLabel = new QLabel("Control law: -- ms");
+    controlLawTimeLabel->setObjectName("statusDetail");
+    controlLawTimeLabel->setToolTip("Native control step calculation time for the command sent to the motors");
+    statusLayout->addWidget(controlLawTimeLabel);
     statusLayout->addStretch();
     rightColumn->addWidget(statusPanel);
 
@@ -447,10 +464,6 @@ MainWindow::MainWindow(QWidget *parent)
     controlLayout->setSpacing(10);
     controlLayout->setSizeConstraint(QLayout::SetNoConstraint);
 
-    auto *controlHeading = new QLabel("CONTROL PANEL");
-    controlHeading->setObjectName("panelHeading");
-    controlLayout->addWidget(controlHeading);
-
     auto *tabs = new CompactTabWidget;
     tabs->setObjectName("controlTabs");
     tabs->setMinimumHeight(0);
@@ -459,6 +472,149 @@ MainWindow::MainWindow(QWidget *parent)
     auto *actuatorsTab = new QWidget;
     auto *imageProcessingTab = new QWidget;
     auto *poleCalibrationTab = new QWidget;
+
+    auto *controlPageLayout = new QVBoxLayout(controlTab);
+    controlPageLayout->setContentsMargins(10, 8, 10, 8);
+    controlPageLayout->setSpacing(4);
+    auto *controlSelectLabel = new QLabel("Control Select");
+    controlSelectLabel->setObjectName("fieldLabel");
+    auto *controlSelect = new QComboBox;
+    controlSelect->setObjectName("controlSelect");
+    controlSelect->setFixedWidth(240);
+    controlSelect->addItem("Linear Two Norm Min", "linear_two_norm_min");
+    controlSelect->addItem("Nonlinear Feedback Linearize", "nonlinear_feedback_linearize");
+    new ComboArrowOverlay(controlSelect);
+    auto *controlStartButton = new QPushButton("Start", controlTab);
+    controlStartButton->setObjectName("controlStartButton");
+    controlStartButton->setCheckable(true);
+    controlStartButton->setFixedSize(56, 56);
+    controlStartButton->setEnabled(false);
+    controlStartButton->setToolTip("Connect all six actuators before starting control");
+    auto *controlResetButton = new QPushButton("Reset", controlTab);
+    controlResetButton->setObjectName("controlResetButton");
+    controlResetButton->setFixedSize(56, 56);
+    controlResetButton->setEnabled(false);
+    controlResetButton->setToolTip("Move all motors to their configured bias angles");
+    auto *controlButtonRow = new QHBoxLayout;
+    controlButtonRow->setContentsMargins(0, 6, 0, 0);
+    controlButtonRow->setSpacing(8);
+    controlButtonRow->addWidget(controlStartButton);
+    controlButtonRow->addWidget(controlResetButton);
+    controlButtonRow->addStretch();
+    auto *controlTypeLabel = new QLabel("Control Type");
+    controlTypeLabel->setObjectName("fieldLabel");
+    auto *controlType = new QComboBox;
+    controlType->setObjectName("controlType");
+    controlType->setFixedWidth(240);
+    controlType->addItem("Proportional", "proportional");
+    controlType->addItem("Proportional Integral", "proportional_integral");
+    controlType->addItem("LQR", "lqr");
+    controlType->addItem("LQR With Integral", "lqr_with_integral");
+    new ComboArrowOverlay(controlType);
+
+    struct GainSpec {
+        const char *key;
+        QString label;
+        double value;
+        int decimals;
+        double step;
+    };
+    auto *gainPages = new QStackedWidget(controlTab);
+    gainPages->setObjectName("controlGainPages");
+    gainPages->setFixedWidth(240);
+    const auto addGainPage = [this, gainPages](
+        const char *type, std::initializer_list<GainSpec> gains, bool integral) {
+        auto *page = new QWidget(gainPages);
+        auto *pageLayout = new QVBoxLayout(page);
+        pageLayout->setContentsMargins(0, 8, 0, 0);
+        pageLayout->setSpacing(8);
+        auto *gainRows = new QWidget(page);
+        gainRows->setFixedWidth(200);
+        auto *grid = new QGridLayout(gainRows);
+        grid->setContentsMargins(0, 0, 0, 0);
+        grid->setHorizontalSpacing(6);
+        grid->setVerticalSpacing(4);
+        int row = 0;
+        for (const auto &gain : gains) {
+            auto *label = new QLabel(gain.label, gainRows);
+            label->setObjectName("controlGainLabel");
+            auto *editor = new QDoubleSpinBox(gainRows);
+            editor->setObjectName(QStringLiteral("controlGain_%1_%2")
+                .arg(QString::fromLatin1(type), QString::fromLatin1(gain.key)));
+            editor->setFixedSize(154, 26);
+            editor->setRange(-1.0e9, 1.0e9);
+            editor->setDecimals(gain.decimals);
+            editor->setSingleStep(gain.step);
+            editor->setKeyboardTracking(false);
+            editor->setValue(gain.value);
+            new SpinArrowOverlay(editor);
+            grid->addWidget(label, row, 0, Qt::AlignVCenter);
+            grid->addWidget(editor, row, 1, Qt::AlignRight);
+            ++row;
+        }
+        pageLayout->addWidget(gainRows, 0, Qt::AlignLeft);
+        if (integral) {
+            auto *resetButton = new QPushButton("Reset\nInt", page);
+            resetButton->setObjectName(QStringLiteral("resetIntegrator_%1")
+                .arg(QString::fromLatin1(type)));
+            resetButton->setProperty("controlReset", true);
+            resetButton->setFixedSize(47, 35);
+            resetButton->setToolTip(
+                "Request an integrator reset when the control loop is connected");
+            auto *resetRow = new QWidget(page);
+            resetRow->setFixedWidth(200);
+            auto *resetLayout = new QHBoxLayout(resetRow);
+            resetLayout->setContentsMargins(0, 0, 0, 0);
+            resetLayout->addStretch();
+            resetLayout->addWidget(resetButton);
+            pageLayout->addWidget(resetRow, 0, Qt::AlignLeft);
+            connect(resetButton, &QPushButton::clicked,
+                    this, &MainWindow::resetIntegratorRequested);
+        }
+        pageLayout->addStretch();
+        gainPages->addWidget(page);
+    };
+    addGainPage("proportional", {
+        {"kr", QStringLiteral("K<sub>r</sub>"), 3000.0, 0, 100.0}
+    }, false);
+    addGainPage("proportional_integral", {
+        {"kr", QStringLiteral("K<sub>r</sub>"), 2000.0, 0, 100.0},
+        {"ki", QStringLiteral("K<sub>i</sub>"), 10.0, 0, 1.0}
+    }, true);
+    addGainPage("lqr", {
+        {"kr", QStringLiteral("K<sub>r</sub>"), 3000.0, 0, 100.0},
+        {"kv", QStringLiteral("K<sub>v</sub>"), 1.0, 1, 0.1},
+        {"kyhat", QStringLiteral("K<sub>ŷ</sub>"), 0.06, 2, 0.01},
+        {"kyhat1", QStringLiteral("K<sub>ŷ₁</sub>"), 1.5e-4, 8, 1e-5}
+    }, false);
+    addGainPage("lqr_with_integral", {
+        {"kr", QStringLiteral("K<sub>r</sub>"), 1500.0, 0, 100.0},
+        {"kv", QStringLiteral("K<sub>v</sub>"), 0.1, 1, 0.1},
+        {"kyhat", QStringLiteral("K<sub>ŷ</sub>"), 0.01, 2, 0.01},
+        {"kyhat1", QStringLiteral("K<sub>ŷ₁</sub>"), 1e-4, 8, 1e-5},
+        {"kq", QStringLiteral("K<sub>q</sub>"), 1100.0, 0, 100.0}
+    }, true);
+    connect(controlType, qOverload<int>(&QComboBox::currentIndexChanged),
+            gainPages, &QStackedWidget::setCurrentIndex);
+
+    auto *controlSelectColumn = new QVBoxLayout;
+    controlSelectColumn->setSpacing(4);
+    controlSelectColumn->addWidget(controlSelectLabel);
+    controlSelectColumn->addWidget(controlSelect);
+    controlSelectColumn->addLayout(controlButtonRow);
+    controlSelectColumn->addStretch();
+    auto *controlTypeColumn = new QVBoxLayout;
+    controlTypeColumn->setSpacing(4);
+    controlTypeColumn->addWidget(controlTypeLabel);
+    controlTypeColumn->addWidget(controlType);
+    controlTypeColumn->addWidget(gainPages);
+    auto *controlSelectors = new QHBoxLayout;
+    controlSelectors->setContentsMargins(0, 0, 0, 0);
+    controlSelectors->addLayout(controlSelectColumn);
+    controlSelectors->addStretch();
+    controlSelectors->addLayout(controlTypeColumn);
+    controlPageLayout->addLayout(controlSelectors);
+    controlPageLayout->addStretch();
 
     auto *actuatorLayout = new QVBoxLayout(actuatorsTab);
     actuatorLayout->setContentsMargins(10, 8, 10, 8);
@@ -558,9 +714,11 @@ MainWindow::MainWindow(QWidget *parent)
     motorStatusRow->addWidget(motorStatusLabel, 0, Qt::AlignTop);
     QVector<QFrame *> motorStatusLights;
     QVector<QSpinBox *> motorIdEditors;
+    QVector<QDoubleSpinBox *> motorBiasEditors;
     const auto savedMotorBiases = m_motorController->biases();
     motorStatusLights.reserve(6);
     motorIdEditors.reserve(6);
+    motorBiasEditors.reserve(6);
     for (int index = 0; index < 6; ++index) {
         auto *motorColumn = new QVBoxLayout;
         motorColumn->setContentsMargins(0, 0, 0, 0);
@@ -609,6 +767,7 @@ MainWindow::MainWindow(QWidget *parent)
 
         motorStatusLights.append(light);
         motorIdEditors.append(idEditor);
+        motorBiasEditors.append(biasEditor);
         motorColumn->addWidget(idLabel, 0, Qt::AlignHCenter);
         motorColumn->addWidget(light, 0, Qt::AlignHCenter);
         motorColumn->addWidget(idEditor, 0, Qt::AlignHCenter);
@@ -1003,6 +1162,7 @@ MainWindow::MainWindow(QWidget *parent)
     tabs->addTab(actuatorsTab, "Actuators");
     tabs->addTab(imageProcessingTab, "Image Processing");
     tabs->addTab(poleCalibrationTab, "Pole Calibration");
+    controlLayout->addWidget(new ControlPanelNavigation(tabs));
     controlLayout->addWidget(tabs, 1);
     rightColumn->addWidget(controlPanel);
     rightColumn->setStretchFactor(0, 1);
@@ -1200,6 +1360,121 @@ MainWindow::MainWindow(QWidget *parent)
             m_manipulatorView->setMagnetAngle(index, angles[index]);
     });
 
+    // New goal writes are restricted to the standalone localhost simulator.
+    const auto refreshControlButtons = [controlSelect, controlType,
+        controlStartButton, controlResetButton, motorConnectButton, portSelector] {
+        const bool connected = motorConnectButton->property("connectionState").toInt()
+            == MotorController::Connected;
+        const bool simulator = portSelector->currentData().toString()
+            .startsWith(QStringLiteral("simulator://"));
+        const bool supported = controlSelect->currentData().toString()
+                == QStringLiteral("linear_two_norm_min")
+            && controlType->currentData().toString()
+                == QStringLiteral("proportional");
+        controlStartButton->setEnabled(controlStartButton->isChecked()
+                                       || (connected && simulator && supported));
+        controlResetButton->setEnabled(
+            connected && simulator && !controlStartButton->isChecked());
+        if (controlStartButton->isChecked())
+            motorConnectButton->setEnabled(false);
+        if (!controlStartButton->isChecked())
+            controlStartButton->setToolTip(!connected
+                ? QStringLiteral("Connect all six actuators before starting control")
+                : (!simulator ? QStringLiteral("Live goal writes are currently simulator-only")
+                    : (supported ? QStringLiteral("Start full-rate proportional control")
+                        : QStringLiteral("This controller combination is not implemented yet"))));
+    };
+    auto *loopTimeTimer = new QTimer(this);
+    loopTimeTimer->setInterval(1000 / visualizationRate->value());
+    connect(visualizationRate, qOverload<int>(&QSpinBox::valueChanged),
+            loopTimeTimer, [loopTimeTimer](int rate) {
+        loopTimeTimer->setInterval(1000 / rate);
+    });
+    connect(loopTimeTimer, &QTimer::timeout, this,
+            [this, loopTimeLabel, endToEndLabel, controlLawTimeLabel] {
+        const auto timing = m_motorController->controlTiming();
+        const auto display = [](QLabel *label, const QString &name, double value, int decimals) {
+            label->setText(value >= 0.0
+                ? QStringLiteral("%1: %2 ms").arg(name).arg(value, 0, 'f', decimals)
+                : QStringLiteral("%1: -- ms").arg(name));
+        };
+        display(loopTimeLabel, "Loop time", timing.loopMilliseconds, 2);
+        display(endToEndLabel, "End-to-end delay", timing.endToEndMilliseconds, 2);
+        display(controlLawTimeLabel, "Control law", timing.evaluationMilliseconds, 6);
+    });
+    loopTimeTimer->start();
+    auto *proportionalGain = controlTab->findChild<QDoubleSpinBox *>(
+        QStringLiteral("controlGain_proportional_kr"));
+    connect(controlStartButton, &QPushButton::toggled,
+            this, [this, controlStartButton, controlSelect, controlType,
+                   gainPages, proportionalGain, motorBiasEditors,
+                   motorConnectButton, refreshControlButtons](bool running) {
+        if (running) {
+            const auto biases = m_motorController->biases();
+            const std::uint64_t sessionId = m_motorController->beginGoalControl();
+            if (!proportionalGain || sessionId == 0
+                || !m_fastControlRuntime->start(
+                    proportionalGain->value(), biases, sessionId)) {
+                m_motorController->stopGoalControl();
+                QSignalBlocker blocker(controlStartButton);
+                controlStartButton->setChecked(false);
+                refreshControlButtons();
+                return;
+            }
+            controlStartButton->setText("Stop");
+            controlStartButton->setToolTip("Stop sending new goals; motors hold their last targets");
+        } else {
+            m_fastControlRuntime->stop();
+            m_motorController->stopGoalControl();
+            controlStartButton->setText("Start");
+        }
+        controlSelect->setEnabled(!running);
+        controlType->setEnabled(!running);
+        gainPages->setEnabled(!running);
+        for (QDoubleSpinBox *editor : motorBiasEditors)
+            editor->setEnabled(!running);
+        motorConnectButton->setEnabled(!running);
+        refreshControlButtons();
+    });
+    connect(controlResetButton, &QPushButton::clicked,
+            this, [this, controlResetButton] {
+        const bool sent = m_motorController->moveToBias();
+        controlResetButton->setToolTip(sent
+            ? QStringLiteral("Moving simulated motors to their configured bias angles")
+            : QStringLiteral("Reset command failed; check simulator connection"));
+    });
+    connect(m_motorController, &MotorController::connectionStateChanged,
+            this, [controlStartButton, refreshControlButtons](int state,
+                                                               const QString &) {
+        if (state != MotorController::Connected && controlStartButton->isChecked())
+            controlStartButton->click();
+        refreshControlButtons();
+    });
+    connect(controlSelect, qOverload<int>(&QComboBox::currentIndexChanged),
+            this, refreshControlButtons);
+    connect(controlType, qOverload<int>(&QComboBox::currentIndexChanged),
+            this, refreshControlButtons);
+    connect(m_manipulatorView, &ManipulatorView::positionMappingChanged,
+            this, [controlStartButton] {
+        if (controlStartButton->isChecked())
+            controlStartButton->click();
+    });
+    connect(m_manipulatorView->imageTracker(), &ImageTracker::fastResultReady,
+            this, [this](const TrackingResult &result) {
+        if (result.objects.size() > 1)
+            return; // Multiple objects remain ambiguous for this controller.
+        const QPointF point = result.objects.isEmpty()
+            ? QPointF(0.0, 0.0)
+            : result.objects.first().modelPositionMillimeters;
+        const auto command = m_fastControlRuntime->evaluate(
+            point.x() * 0.001, point.y() * 0.001,
+            result.frameId, result.completedAtSteadySeconds);
+        if (command.ready)
+            m_motorController->submitGoalAngles(
+                command.sessionId, command.unbiasedRadians,
+                result.submittedAtSteadySeconds, command.evaluationMilliseconds);
+    }, Qt::DirectConnection);
+
     connect(traceToggle, &QPushButton::toggled,
             this, [this, traceToggle](bool enabled) {
         traceToggle->setText(enabled ? "Trace Off" : "Trace On");
@@ -1294,8 +1569,10 @@ MainWindow::MainWindow(QWidget *parent)
     connect(maximumTraceDots, qOverload<int>(&QSpinBox::valueChanged),
             m_manipulatorView, &ManipulatorView::setMaximumTraceDots);
     connect(cameraSource, qOverload<int>(&QComboBox::currentIndexChanged),
-            this, [this, cameraSource, cameraRotation, cameraExposure,
+            this, [this, controlStartButton, cameraSource, cameraRotation, cameraExposure,
                    cameraFeatureEditors](int index) {
+        if (controlStartButton->isChecked())
+            controlStartButton->click();
         const QString sourceId = cameraSource->itemData(index).toString();
         const bool isVimba = sourceId.startsWith(QStringLiteral("vimba:"));
         for (QDoubleSpinBox *editor : cameraFeatureEditors)
@@ -1367,7 +1644,7 @@ MainWindow::MainWindow(QWidget *parent)
         } else {
             m_trackingState->setText("SEARCHING FOR OBJECT");
             m_trackingState->setProperty("detected", false);
-            m_trackingPosition->setText("x: -- mm   y: -- mm");
+            m_trackingPosition->setText("x: 0.00 mm   y: 0.00 mm");
         }
         m_trackingState->style()->unpolish(m_trackingState);
         m_trackingState->style()->polish(m_trackingState);
@@ -1429,11 +1706,53 @@ MainWindow::MainWindow(QWidget *parent)
             color: #aab6c4;
             font-size: 11px;
         }
+        QLabel#controlGainLabel {
+            color: #c6d2df;
+            font-size: 12px;
+        }
+        QPushButton#controlStartButton,
+        QPushButton#controlResetButton {
+            background: #0f151d;
+            color: #d5dee8;
+            border: 1px solid #3b4b5d;
+            border-radius: 6px;
+            padding: 2px;
+            font-size: 11px;
+            font-weight: 700;
+        }
+        QPushButton#controlStartButton:hover:enabled:!checked,
+        QPushButton#controlResetButton:hover:enabled {
+            background: #1a2633;
+            border-color: #60758c;
+        }
+        QPushButton#controlStartButton:checked {
+            background: #237a50;
+            color: #f4fff9;
+            border-color: #58d99a;
+        }
+        QPushButton#controlStartButton:disabled,
+        QPushButton#controlResetButton:disabled {
+            color: #657487;
+            border-color: #303b49;
+        }
+        QPushButton[controlReset="true"] {
+            background: #0f151d;
+            color: #d5dee8;
+            border: 1px solid #3b4b5d;
+            border-radius: 6px;
+            padding: 2px;
+            font-size: 9px;
+            font-weight: 700;
+        }
+        QPushButton[controlReset="true"]:hover {
+            background: #1a2633;
+            border-color: #60758c;
+        }
         QTabWidget#controlTabs::pane {
             border: 1px solid #2b3745;
             border-radius: 7px;
             background: #141b24;
-            top: -1px;
+            top: 0px;
         }
         QTabBar::tab {
             background: #111821;
@@ -1671,6 +1990,11 @@ void MainWindow::shutdownResources()
     if (m_shutdownComplete)
         return;
     m_shutdownComplete = true;
+
+    if (m_fastControlRuntime)
+        m_fastControlRuntime->stop();
+    if (m_motorController)
+        m_motorController->stopGoalControl();
 
     // Stop camera capture and image processing before releasing the motor
     // worker or any external test process. Each stop waits for its worker.

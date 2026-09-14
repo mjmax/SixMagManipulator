@@ -4,6 +4,7 @@
 #include <QMutexLocker>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <vector>
@@ -41,6 +42,8 @@ void ImageTracker::submitFrame(const QImage &frame, qint64 timestampNanoseconds)
     // camera pixels. Only the newest unprocessed frame is retained.
     m_pendingFrame = frame;
     m_pendingTimestampNanoseconds = timestampNanoseconds;
+    m_pendingSubmittedAtSteadySeconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
     m_hasPendingFrame = true;
     m_frameAvailable.wakeOne();
 }
@@ -63,10 +66,13 @@ void ImageTracker::setSettings(const ImageProcessingSettings &settings)
     m_settings = validated;
 }
 
-void ImageTracker::setMillimeterTransform(const MillimeterTransform &transform)
+void ImageTracker::setMillimeterTransform(
+    const MillimeterTransform &displayTransform,
+    const MillimeterTransform &modelTransform)
 {
     QMutexLocker locker(&m_mutex);
-    m_millimeterTransform = transform;
+    m_millimeterTransform = displayTransform;
+    m_modelMillimeterTransform = modelTransform;
 }
 
 ImageProcessingSettings ImageTracker::settings() const
@@ -107,8 +113,10 @@ void ImageTracker::run()
     while (true) {
         QImage frame;
         qint64 timestampNanoseconds = 0;
+        double submittedAtSteadySeconds = 0.0;
         ImageProcessingSettings currentSettings;
         MillimeterTransform millimeterTransform;
+        MillimeterTransform modelMillimeterTransform;
         {
             QMutexLocker locker(&m_mutex);
             while (!m_hasPendingFrame && !m_stopping)
@@ -118,19 +126,28 @@ void ImageTracker::run()
 
             frame = std::move(m_pendingFrame);
             timestampNanoseconds = m_pendingTimestampNanoseconds;
+            submittedAtSteadySeconds = m_pendingSubmittedAtSteadySeconds;
             m_hasPendingFrame = false;
             currentSettings = m_settings;
             millimeterTransform = m_millimeterTransform;
+            modelMillimeterTransform = m_modelMillimeterTransform;
         }
 
         TrackingResult result = detectObjects(
             frame, timestampNanoseconds, ++frameId, currentSettings);
+        result.submittedAtSteadySeconds = submittedAtSteadySeconds;
         for (TrackedObject &object : result.objects) {
             const QPointF position = object.normalizedPosition;
             object.positionMillimeters = millimeterTransform.origin
                 + millimeterTransform.xStep * position.x()
                 + millimeterTransform.yStep * position.y();
+            object.modelPositionMillimeters = modelMillimeterTransform.origin
+                + modelMillimeterTransform.xStep * position.x()
+                + modelMillimeterTransform.yStep * position.y();
         }
+        result.completedAtSteadySeconds =
+            std::chrono::duration<double>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
 
         ++framesInRateWindow;
         const qint64 rateElapsed = rateTimer.elapsed();

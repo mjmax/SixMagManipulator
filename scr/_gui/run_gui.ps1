@@ -33,6 +33,12 @@ if (-not $NeedsBuild) {
     $BuildInputs += Get-ChildItem -LiteralPath $ImageProcessingDirectory -File -Recurse |
         Where-Object { $_.Extension -in ".cpp", ".h" } |
         Select-Object -ExpandProperty FullName
+    $ControlDirectory = [System.IO.Path]::GetFullPath(
+        (Join-Path $GuiDirectory "..\_control")
+    )
+    $BuildInputs += Get-ChildItem -LiteralPath $ControlDirectory -File |
+        Where-Object { $_.Extension -in ".cpp", ".h" } |
+        Select-Object -ExpandProperty FullName
 
     $NeedsBuild = $null -ne ($BuildInputs | Where-Object {
         (Get-Item -LiteralPath $_).LastWriteTimeUtc -gt $ExecutableTime

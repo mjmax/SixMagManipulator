@@ -562,8 +562,27 @@ void ManipulatorView::updateFastPositionCalibration()
     const QPointF origin = calibratedObjectPosition(QPointF(0.0, 0.0));
     const QPointF xEnd = calibratedObjectPosition(QPointF(1.0, 0.0));
     const QPointF yEnd = calibratedObjectPosition(QPointF(0.0, 1.0));
-    m_imageTracker->setMillimeterTransform(
-        {origin, xEnd - origin, yEnd - origin});
+    const MillimeterTransform displayTransform{origin, xEnd - origin, yEnd - origin};
+    const auto inModelAxes = [this](const QPointF &point) {
+        return QPointF(point.x() * (m_xPositiveRight ? 1.0 : -1.0),
+                       point.y() * (m_yPositiveUp ? 1.0 : -1.0));
+    };
+    const MillimeterTransform modelTransform{
+        inModelAxes(origin), inModelAxes(xEnd - origin),
+        inModelAxes(yEnd - origin)};
+    const auto different = [](const QPointF &a, const QPointF &b) {
+        return std::abs(a.x() - b.x()) > 1e-9
+            || std::abs(a.y() - b.y()) > 1e-9;
+    };
+    const bool mappingChanged = !m_hasModelTransform
+        || different(modelTransform.origin, m_lastModelTransform.origin)
+        || different(modelTransform.xStep, m_lastModelTransform.xStep)
+        || different(modelTransform.yStep, m_lastModelTransform.yStep);
+    m_lastModelTransform = modelTransform;
+    m_hasModelTransform = true;
+    m_imageTracker->setMillimeterTransform(displayTransform, modelTransform);
+    if (mappingChanged)
+        emit positionMappingChanged();
 }
 
 void ManipulatorView::receiveVideoFrame(const QVideoFrame &frame)

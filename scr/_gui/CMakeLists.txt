@@ -20,6 +20,9 @@ set(MOTOR_DIRECTORY
     "${CMAKE_CURRENT_SOURCE_DIR}/../_motors")
 set(SENSOR_DIRECTORY
     "${CMAKE_CURRENT_SOURCE_DIR}/../_sensors")
+set(CONTROL_DIRECTORY
+    "${CMAKE_CURRENT_SOURCE_DIR}/../_control")
+add_subdirectory("${CONTROL_DIRECTORY}" "${CMAKE_CURRENT_BINARY_DIR}/control")
 set(VIMBA_X_ROOT "" CACHE PATH "Allied Vision Vimba X installation root")
 if(NOT EXISTS "${VIMBA_X_ROOT}/api/include/VmbC/VmbC.h"
    OR NOT EXISTS "${VIMBA_X_ROOT}/api/lib/VmbC.lib")
@@ -30,6 +33,8 @@ qt_add_executable(SixMagManipulatorGui WIN32
     src/main.cpp
     src/MainWindow.cpp
     src/MainWindow.h
+    src/ControlPanelNavigation.cpp
+    src/ControlPanelNavigation.h
     src/ManipulatorView.cpp
     src/ManipulatorView.h
     ${IMAGE_PROCESSING_DIRECTORY}/ImageTracker.cpp
@@ -56,6 +61,7 @@ target_link_libraries(SixMagManipulatorGui PRIVATE
     Qt6::Multimedia
     Qt6::Network
     Qt6::SerialPort
+    SixMag::Control
     "${VIMBA_X_ROOT}/api/lib/VmbC.lib"
 )
 
@@ -101,3 +107,29 @@ install(TARGETS SixMagManipulatorGui
     BUNDLE DESTINATION .
     RUNTIME DESTINATION bin
 )
+
+option(SIXMAG_GUI_BUILD_TESTS "Build isolated GUI navigation tests" OFF)
+if(SIXMAG_GUI_BUILD_TESTS)
+    enable_testing()
+    qt_add_executable(ControlPanelNavigationTests
+        tests/ControlPanelNavigationTests.cpp
+        src/ControlPanelNavigation.cpp
+        src/ControlPanelNavigation.h)
+    target_include_directories(ControlPanelNavigationTests PRIVATE src)
+    target_link_libraries(ControlPanelNavigationTests PRIVATE Qt6::Widgets)
+    add_test(NAME ControlPanelNavigation COMMAND ControlPanelNavigationTests -platform offscreen)
+    qt_add_executable(SimulatorControlIntegrationTests
+        tests/SimulatorControlIntegrationTests.cpp
+        ${IMAGE_PROCESSING_DIRECTORY}/ImageTracker.cpp
+        ${IMAGE_PROCESSING_DIRECTORY}/ImageTracker.h
+        ${MOTOR_DIRECTORY}/MotorController.cpp
+        ${MOTOR_DIRECTORY}/MotorController.h
+        ${MOTOR_DIRECTORY}/DynamixelProtocol.cpp
+        ${MOTOR_DIRECTORY}/DynamixelProtocol.h)
+    target_include_directories(SimulatorControlIntegrationTests PRIVATE
+        ${IMAGE_PROCESSING_DIRECTORY} ${MOTOR_DIRECTORY})
+    target_link_libraries(SimulatorControlIntegrationTests PRIVATE
+        Qt6::Core Qt6::Gui Qt6::Network Qt6::SerialPort SixMag::Control)
+    add_dependencies(SimulatorControlIntegrationTests SixMagMotorEmulator)
+    add_test(NAME SimulatorControlIntegration COMMAND SimulatorControlIntegrationTests)
+endif()

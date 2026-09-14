@@ -1,6 +1,9 @@
 #pragma once
 
 #include <QMainWindow>
+#include <memory>
+
+namespace sixmag::control { class FastControlRuntime; }
 
 class QLabel;
 class ManipulatorView;
@@ -16,6 +19,9 @@ public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow() override;
 
+signals:
+    void resetIntegratorRequested();
+
 protected:
     void closeEvent(QCloseEvent *event) override;
 
@@ -25,6 +31,7 @@ private:
     ManipulatorView *m_manipulatorView = nullptr;
     MotorController *m_motorController = nullptr;
     HallSensorController *m_hallSensorController = nullptr;
+    std::unique_ptr<sixmag::control::FastControlRuntime> m_fastControlRuntime;
     QLabel *m_trackingState = nullptr;
     QLabel *m_trackingPosition = nullptr;
     QLabel *m_trackingPerformance = nullptr;
