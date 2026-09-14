@@ -5,10 +5,67 @@ This module contains the C++/Qt 6 desktop GUI. It provides:
 - a circular, center-cropped live camera workspace;
 - six top-view magnet dials and servo-limit visualization;
 - low-rate object and trace rendering that does not throttle detection;
-- compact **Actuators** and **Image Processing** tabs;
+- compact settings pages selected through the three-dot panel menu;
 - detector status and a **Clear trace path** button.
 
+The three-dot button at the top right of the control panel selects **Control**,
+**Actuators**, **Image Processing**, or **Pole Calibration**. A dot marks the
+selected page, and the heading changes to `CONTROL PANEL : <page name>`.
+The GUI opens on **Control**. The existing settings in the other pages are unchanged.
+The Control page has a **Control Select** menu with **Linear Two Norm Min** and
+**Nonlinear Feedback Linearize**; the first option is selected initially.
+At the top right, **Control Type** offers **Proportional**, **Proportional
+Integral**, **LQR**, and **LQR With Integral**, defaulting to Proportional.
+The gain fields below it change with the selected type and keep edits while
+switching types. Proportional starts with K_r = 3000; Proportional Integral
+with K_r = 2000 and K_i = 10; LQR with K_r = 3000, K_v = 1,
+K_yhat = 0.06, and K_yhat1 = 1.5e-4; LQR With Integral with K_r = 1500,
+K_v = 0.1, K_yhat = 0.01, K_yhat1 = 1e-4, and K_q = 1100.
+Integral types show a **Reset Int** button. The GUI emits a reset request
+from it; the native loop does not yet have an integral state to reset.
+
+Two square buttons below **Control Select** provide **Start/Stop** and **Reset**.
+Start turns green and becomes Stop while the controller is active. Only
+**Linear Two Norm Min + Proportional** is currently executable; it uses the
+current K_r field instead of the native library's 4000 default. All other
+controller combinations leave Start disabled. The goal-write path is currently
+restricted to **Simulator (localhost)**; a physical COM connection remains
+read-only for this control feature. Stop ceases new goal writes and leaves the
+last motor targets in place. Reset is available only while stopped and sends
+all six motors to their configured raw bias positions.
+
+Each completed detection drives the native controller directly on the image
+worker thread. Its position is converted from calibrated millimetres to model
+metres, with fixed model axes even if the displayed axes are flipped. The
+motor worker retains only the latest command, adds each motor's bias at the
+write boundary, and sends one Protocol 1.0 synchronized goal packet after a
+healthy position-poll cycle. GUI refresh rate does not schedule the loop.
+Completed frames without a detected object use (0, 0) metres as control feedback.
+For the current proportional controller this commands zero unbiased angles
+(raw bias positions). Missing/stale frames do not synthesize new feedback.
+Changing the camera view or
+calibration, or losing the actuator connection, stops the loop.
+
 ## Integrated image processing
+
+System Status reports three control timings, refreshed at the selected GUI rate:
+
+- **Loop time:** interval between completed motor-command writes (the effective
+  actuator update period), including the effect of six-motor polling, camera
+  processing and command output. It appears after two completed writes.
+- **End-to-end delay:** elapsed time from the earlier of the selected frame's
+  arrival at the image tracker or the associated six-motor poll start, through
+  detection, control calculation, queueing and completed command output.
+  Camera and polling work overlap, rather than having their durations added.
+- **Control law:** native control-step evaluation time for the transmitted
+  command, in milliseconds with six decimal places.
+
+These are host software measurements, not camera exposure-to-motion latency.
+Broadcast goal writes have no motor acknowledgement: completion means the
+application's output queue drained, not that motors reached their targets.
+Only successfully written commands update the timing snapshot; while waiting
+for the next update the last measurement remains displayed. Stopping control
+clears the display, and each new run starts a fresh timing session.
 
 The native real-time tracker is kept in `scr/_imgproc/ImageTracker.h` and
 `scr/_imgproc/ImageTracker.cpp`. It implements the same dark, approximately
@@ -28,13 +85,14 @@ unprocessed camera frame. Detection uses every available frame, while camera,
 marker, status, and trace drawing default to 15 Hz. Detection is restricted to
 the centered circular region that is actually visible in the workspace.
 
-`ImageTracker::latestResult()` provides a thread-safe latest position for the
-future control loop. `fastResultReady` is emitted after every processed frame;
+`ImageTracker::latestResult()` provides a thread-safe latest position for other
+consumers. `fastResultReady` is emitted after every processed frame;
 `visualizationResultReady` is rate-limited for the GUI. Results are represented
 as a collection and the detector can return up to two objects, although the
 current application deliberately requests one object.
-Each full-rate `TrackedObject` now includes `positionMillimeters`, computed
-from the active camera's distance calibration and current axis directions.
+Each full-rate `TrackedObject` includes `positionMillimeters` for display and
+`modelPositionMillimeters` for control, both computed from the active camera's
+distance calibration. The latter keeps fixed mathematical axes.
 Changing the calibration, camera view, or axis direction updates the worker's
 lightweight coordinate transform; it does not change the GUI refresh limit.
 
@@ -56,7 +114,7 @@ relative to each magnet's zero position (positive counterclockwise). Magnet
 dials and labels use those corrected angles and update at the selected GUI
 refresh rate. The bias is associated with M1–M6, not the editable bus ID.
 
-For the future control loop, keep all measured and commanded magnet angles in
+The control loop keeps all measured and commanded magnet angles in
 this bias-free coordinate system. At the motor-command boundary only, add the
 corresponding M1–M6 bias to each commanded angle, validate the resulting servo
 angle against its 0°–300° physical range, and then encode the goal position.
@@ -71,9 +129,12 @@ D2XX is not used. The overlaid **Poll Actuators** button measures 100 complete
 six-motor position-read cycles on the existing worker, shows the running average,
 and reports **Test Failed** if any read fails.
 
-Run `scr/_motors/run_emulator.ps1` to test the same scan and acquisition path
-without hardware, then select **Simulator (localhost)** before connecting. The
-emulator is automatically terminated when the main GUI closes.
+Run `scr/_motors/run_emulator.ps1` to test scanning, acquisition, Start/Stop,
+and Reset without hardware, then select **Simulator (localhost)** before
+connecting. The emulator is automatically terminated when the main GUI closes.
+The simulator now follows goal positions subject to its configured speed limit.
+The end-to-end test can be built with `-DSIXMAG_GUI_BUILD_TESTS=ON` and run as
+`SimulatorControlIntegrationTests.exe` from the GUI build directory.
 
 The **Pole Calibration** tab connects to an Arduino Mega sensor stream. Select
 the Arduino COM port and baud rate (115200 by default), then connect. The

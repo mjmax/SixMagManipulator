@@ -163,14 +163,33 @@ Keep the emulator process running, select **Simulator (localhost)** in the
 Actuators tab, leave the baud selector at 1,000,000, and press **Connect**.
 Closing the main GUI also terminates the emulator process if it is running.
 
+For closed-loop simulator testing, open the **Control** page using the panel's
+three-dot menu. Select **Linear Two Norm Min** and **Proportional**, set K_r,
+then press **Start**. **Stop** retains the last targets; **Reset**, available
+while stopped, commands each motor to its configured bias. Other controller
+choices are placeholders. No additional packages are needed for this feature.
+
+A processed frame without an object supplies (0, 0) to the display and control
+law, which commands the bias positions with the current proportional law.
+No arriving frames is different: it does not generate replacement commands.
+System Status separates the command-update period (**Loop time**), overlapping
+camera/motor processing latency (**End-to-end delay**), and **Control law**
+calculation time. A slow webcam can limit the update period even when processing
+latency is short. Physical motor goal control remains disabled pending approved
+hardware testing. See [GUI details](scr/_gui/README.md) for timing definitions.
+
 ## Mathematical model documentation
 
 The native acceleration/Jacobian library is in `scr/_control`. Build and test
 it with `.\scr\_control\build_control.ps1 -Benchmark`; it uses the existing
 compiler tools in `utilities` and does not require MATLAB or Qt at runtime.
 See [Native control model](docs/native_control_model.md) for the SI-unit API,
-MATLAB reference comparisons, and timing results. It does not yet implement
-the control law or send motor commands.
+MATLAB reference comparisons, and timing results. The first
+[linearized computational control loop](docs/linearized_control_loop.md) is
+also available, with mode selection and bounded angle outputs. The GUI now
+runs its Linear Two Norm Min + Proportional mode from full-rate image feedback
+and sends six goal positions to the standalone motor simulator. Goal writes to
+physical motors are still disabled in this build.
 
 The model report source lives in [docs/](docs/README.md), alongside the source
 directory rather than inside it. See that documentation for the LaTeX build

@@ -1,9 +1,12 @@
-# Native analytical model for the future control loop
+# Native analytical model for the control loop
 
 The C++17 library in `scr/_control` evaluates the verified complex magnetic
 model directly from the equations and data in `__refmod`. It does not call
-MATLAB, use `__impmod`, calculate a control law, or communicate with hardware.
+MATLAB, use `__impmod`, calculate a control law itself, or communicate with hardware.
 Both MATLAB implementations are unchanged.
+
+The library also now includes the separate [linearized computational control
+loop](linearized_control_loop.md). Live GUI and motor integration remain pending.
 
 One native call returns magnetic acceleration, its position Jacobian, and its
 magnet-angle Jacobian together. The scaled field and its spatial derivative

@@ -1,5 +1,8 @@
 # Magnetic model review
 
+For the first selectable, fixed-origin computational control loop, see
+[Linearized control loop](linearized_control_loop.md).
+
 For the native SI-unit evaluator intended for the future control loop, see
 [Native control model](native_control_model.md).
 
