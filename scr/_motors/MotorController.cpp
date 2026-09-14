@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 
 namespace {
@@ -24,7 +25,10 @@ constexpr int motorCount = 6;
 constexpr int simulatorPort = 45454;
 constexpr int transactionTimeoutMs = 30;
 constexpr quint8 presentPositionAddress = 36;
+constexpr quint8 goalPositionAddress = 30;
 constexpr quint8 movingSpeedAddress = 32;
+constexpr quint8 broadcastId = 0xfe;
+constexpr double pi = 3.14159265358979323846;
 constexpr double speedRpmPerStep = 0.111;
 constexpr double maximumSpeedRpm = 97.0;
 
@@ -39,6 +43,18 @@ double rawPositionToDegrees(quint16 rawPosition)
 {
     return static_cast<double>(rawPosition) * 300.0 / 1023.0;
 }
+
+quint16 degreesToRawPosition(double degrees)
+{
+    return static_cast<quint16>(std::clamp(
+        std::lround(degrees * 1023.0 / 300.0), 0L, 1023L));
+}
+
+double steadySeconds()
+{
+    return std::chrono::duration<double>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 }
 
 struct MotorStateStore
@@ -50,6 +66,17 @@ struct MotorStateStore
     double speedLimitRpm = 35.0;
     int speedRegister = rpmToSpeedRegister(35.0);
     std::atomic_int guiRefreshRateHz{15};
+    bool connected = false;
+    bool simulatorEndpoint = false;
+    bool goalControlActive = false;
+    std::uint64_t goalSessionId = 0;
+    std::uint64_t goalSequence = 0;
+    std::array<double, motorCount> goalRadians{};
+    double goalCreatedAtSeconds = 0.0;
+    double goalFrameSubmittedAtSeconds = 0.0;
+    double goalEvaluationMilliseconds = 0.0;
+    double previousCommandCompletedAtSeconds = 0.0;
+    ControlTiming timing;
 };
 
 class MotorWorker final : public QObject
@@ -173,6 +200,12 @@ public slots:
         m_motorStates.fill(1);
         m_guiClock.restart();
         m_connected = true;
+        m_usingSimulator = usingSimulator;
+        {
+            QMutexLocker locker(&m_stateStore->mutex);
+            m_stateStore->connected = true;
+            m_stateStore->simulatorEndpoint = usingSimulator;
+        }
         m_lastReportedState = MotorController::Connected;
         emit connectionStateChanged(MotorController::Connected,
                                     QStringLiteral("All six motors connected"));
@@ -212,6 +245,26 @@ public slots:
         m_pollTimer->start();
     }
 
+    bool resetToBias()
+    {
+        if (!m_connected || !m_usingSimulator || !m_device)
+            return false;
+        std::array<quint16, motorCount> goals{};
+        {
+            QMutexLocker locker(&m_stateStore->mutex);
+            if (m_stateStore->goalControlActive)
+                return false;
+            for (int i = 0; i < motorCount; ++i)
+                goals[i] = degreesToRawPosition(m_stateStore->biases[i]);
+        }
+        if (writeGoalPositions(goals))
+            return true;
+        failGoalWrite();
+        return false;
+    }
+
+    void controlStopBarrier() {} // Blocking invoke drains any in-flight write.
+
 private slots:
     void pollPositions()
     {
@@ -219,6 +272,7 @@ private slots:
             return;
 
         QElapsedTimer cycleClock;
+        const double pollStartedAtSeconds = steadySeconds();
         cycleClock.start();
         std::array<double, motorCount> rawAngles;
         {
@@ -303,6 +357,8 @@ private slots:
             emit guiAnglesReady(guiAngles);
             m_guiClock.restart();
         }
+        if (allHealthy)
+            flushLatestGoal(pollStartedAtSeconds);
     }
 
 signals:
@@ -315,6 +371,84 @@ signals:
     void pollBenchmarkFailed(const QString &message);
 
 private:
+    bool writeGoalPositions(const std::array<quint16, motorCount> &goals)
+    {
+        if (!m_usingSimulator || !m_device || !m_device->isOpen())
+            return false;
+        QByteArray parameters;
+        parameters.reserve(2 + motorCount * 3);
+        parameters.append(char(goalPositionAddress));
+        parameters.append(char(2));
+        for (int i = 0; i < motorCount; ++i) {
+            parameters.append(char(m_motorIds[i]));
+            parameters.append(char(goals[i] & 0xff));
+            parameters.append(char((goals[i] >> 8) & 0xff));
+        }
+        const QByteArray packet = DynamixelProtocol::makePacket(
+            broadcastId, DynamixelProtocol::syncWriteInstruction, parameters);
+        if (m_device->write(packet) != packet.size())
+            return false;
+        QElapsedTimer writeTimer;
+        writeTimer.start();
+        while (m_device->bytesToWrite() > 0) {
+            const int remaining = transactionTimeoutMs - static_cast<int>(writeTimer.elapsed());
+            if (remaining <= 0 || !m_device->waitForBytesWritten(remaining))
+                return false;
+        }
+        return true; // Host write completed; broadcast SyncWrite has no acknowledgement.
+    }
+
+    void failGoalWrite()
+    {
+        closeDevice(false);
+        m_lastReportedState = MotorController::CommunicationError;
+        emit connectionStateChanged(MotorController::CommunicationError,
+                                    QStringLiteral("Goal-position write failed"));
+    }
+
+    void flushLatestGoal(double pollStartedAtSeconds)
+    {
+        if (!m_connected || !m_device)
+            return;
+        std::array<quint16, motorCount> goals{};
+        std::uint64_t sequence = 0;
+        std::uint64_t session = 0;
+        double frameSubmitted = 0.0;
+        double evaluationMilliseconds = 0.0;
+        {
+            QMutexLocker locker(&m_stateStore->mutex);
+            if (!m_stateStore->connected || !m_stateStore->goalControlActive
+                || m_stateStore->goalSequence == m_lastGoalSequence
+                || steadySeconds() - m_stateStore->goalCreatedAtSeconds > 0.1)
+                return;
+            sequence = m_stateStore->goalSequence;
+            session = m_stateStore->goalSessionId;
+            frameSubmitted = m_stateStore->goalFrameSubmittedAtSeconds;
+            evaluationMilliseconds = m_stateStore->goalEvaluationMilliseconds;
+            for (int i = 0; i < motorCount; ++i) {
+                const double rawDegrees = m_stateStore->biases[i]
+                    + m_stateStore->goalRadians[i] * 180.0 / pi;
+                goals[i] = degreesToRawPosition(rawDegrees);
+            }
+        }
+        if (!writeGoalPositions(goals)) {
+            failGoalWrite();
+            return;
+        }
+        m_lastGoalSequence = sequence;
+        const double completed = steadySeconds();
+        QMutexLocker locker(&m_stateStore->mutex);
+        if (m_stateStore->goalControlActive && session == m_stateStore->goalSessionId) {
+            auto &state = *m_stateStore;
+            state.timing.loopMilliseconds = state.previousCommandCompletedAtSeconds > 0.0
+                ? (completed - state.previousCommandCompletedAtSeconds) * 1000.0 : -1.0;
+            state.timing.endToEndMilliseconds = (completed - std::min(
+                pollStartedAtSeconds, frameSubmitted > 0.0 ? frameSubmitted : pollStartedAtSeconds)) * 1000.0;
+            state.timing.evaluationMilliseconds = evaluationMilliseconds;
+            state.previousCommandCompletedAtSeconds = completed;
+        }
+    }
+
     bool writeMovingSpeed(int rawSpeed)
     {
         QByteArray parameters;
@@ -424,6 +558,15 @@ private:
                 QStringLiteral("Disconnected during poll test"));
         }
         m_connected = false;
+        m_usingSimulator = false;
+        {
+            QMutexLocker locker(&m_stateStore->mutex);
+            m_stateStore->connected = false;
+            m_stateStore->simulatorEndpoint = false;
+            m_stateStore->goalControlActive = false;
+            m_stateStore->goalCreatedAtSeconds = 0.0;
+            ++m_stateStore->goalSessionId;
+        }
         m_speedWriteFailed = false;
         if (m_pollTimer)
             m_pollTimer->stop();
@@ -454,6 +597,8 @@ private:
     int m_benchmarkCompletedCycles = 0;
     double m_benchmarkTotalMilliseconds = 0.0;
     bool m_connected = false;
+    bool m_usingSimulator = false;
+    std::uint64_t m_lastGoalSequence = 0;
     bool m_speedWriteFailed = false;
 };
 
@@ -524,6 +669,8 @@ void MotorController::shutdown()
 {
     if (!m_workerThread || !m_workerThread->isRunning())
         return;
+
+    stopGoalControl();
 
     // Blocking invocation guarantees QSerialPort::close() completes in the
     // worker's own thread before the GUI window is allowed to disappear.
@@ -612,7 +759,75 @@ void MotorController::connectEndpoint(const QString &endpoint, int baudRate,
 
 void MotorController::disconnectEndpoint()
 {
+    stopGoalControl();
     emit disconnectRequested();
+}
+
+std::uint64_t MotorController::beginGoalControl()
+{
+    QMutexLocker locker(&m_stateStore->mutex);
+    if (!m_stateStore->connected || !m_stateStore->simulatorEndpoint)
+        return 0;
+    ++m_stateStore->goalSessionId;
+    m_stateStore->goalControlActive = true;
+    m_stateStore->goalCreatedAtSeconds = 0.0;
+    m_stateStore->previousCommandCompletedAtSeconds = 0.0;
+    m_stateStore->timing = {};
+    return m_stateStore->goalSessionId;
+}
+
+void MotorController::stopGoalControl()
+{
+    {
+        QMutexLocker locker(&m_stateStore->mutex);
+        m_stateStore->goalControlActive = false;
+        m_stateStore->goalCreatedAtSeconds = 0.0;
+        ++m_stateStore->goalSessionId;
+    }
+    if (m_workerThread && m_workerThread->isRunning()
+        && QThread::currentThread() != m_workerThread)
+        QMetaObject::invokeMethod(m_worker, "controlStopBarrier",
+                                  Qt::BlockingQueuedConnection);
+}
+
+void MotorController::submitGoalAngles(
+    std::uint64_t sessionId, const std::array<double, 6> &angles,
+    double frameSubmittedAtSeconds, double evaluationMilliseconds)
+{
+    QMutexLocker locker(&m_stateStore->mutex);
+    if (!m_stateStore->connected || !m_stateStore->simulatorEndpoint
+        || !m_stateStore->goalControlActive
+        || sessionId != m_stateStore->goalSessionId)
+        return;
+    for (int i = 0; i < motorCount; ++i) {
+        const double rawDegrees = m_stateStore->biases[i]
+            + angles[i] * 180.0 / pi;
+        if (!std::isfinite(rawDegrees) || rawDegrees < -1e-9
+            || rawDegrees > 300.0 + 1e-9)
+            return;
+    }
+    m_stateStore->goalRadians = angles;
+    m_stateStore->goalCreatedAtSeconds = steadySeconds();
+    m_stateStore->goalFrameSubmittedAtSeconds = frameSubmittedAtSeconds;
+    m_stateStore->goalEvaluationMilliseconds = evaluationMilliseconds;
+    ++m_stateStore->goalSequence;
+}
+
+ControlTiming MotorController::controlTiming() const
+{
+    QMutexLocker locker(&m_stateStore->mutex);
+    return m_stateStore->goalControlActive && m_stateStore->connected
+        ? m_stateStore->timing : ControlTiming{};
+}
+
+bool MotorController::moveToBias()
+{
+    bool result = false;
+    if (m_workerThread && m_workerThread->isRunning())
+        QMetaObject::invokeMethod(m_worker, [this, &result] {
+            result = m_worker->resetToBias();
+        }, Qt::BlockingQueuedConnection);
+    return result;
 }
 
 void MotorController::startPollBenchmark(int cycleCount)

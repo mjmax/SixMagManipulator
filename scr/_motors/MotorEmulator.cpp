@@ -9,6 +9,7 @@
 #include <QTextStream>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 namespace {
@@ -16,6 +17,8 @@ constexpr int motorCount = 6;
 constexpr quint16 serverPort = 45454;
 constexpr quint8 presentPositionAddress = 36;
 constexpr quint8 movingSpeedAddress = 32;
+constexpr quint8 goalPositionAddress = 30;
+constexpr quint8 broadcastId = 0xfe;
 constexpr double pi = 3.14159265358979323846;
 
 quint16 simulatedPosition(int id, qint64 elapsedMilliseconds)
@@ -36,6 +39,27 @@ int main(int argc, char *argv[])
     QTcpServer server;
     QElapsedTimer clock;
     clock.start();
+    std::array<double, motorCount> positions{};
+    std::array<double, motorCount> goals{};
+    std::array<int, motorCount> speedRegisters{};
+    std::array<qint64, motorCount> lastUpdates{};
+    std::array<bool, motorCount> goalMode{};
+    speedRegisters.fill(315);
+    const auto updateMotor = [&](int index) {
+        const qint64 now = clock.elapsed();
+        if (!goalMode[index]) {
+            positions[index] = simulatedPosition(index + 1, now);
+        } else {
+            const double seconds = std::max<qint64>(0, now - lastUpdates[index])
+                / 1000.0;
+            const double rpm = speedRegisters[index] == 0 ? 97.0
+                : std::min(97.0, speedRegisters[index] * 0.111);
+            const double maxRawStep = rpm * 6.0 * 1023.0 / 300.0 * seconds;
+            positions[index] += std::clamp(
+                goals[index] - positions[index], -maxRawStep, maxRawStep);
+        }
+        lastUpdates[index] = now;
+    };
     QHash<QTcpSocket *, QByteArray> buffers;
 
     QObject::connect(&server, &QTcpServer::newConnection, &application, [&] {
@@ -49,6 +73,28 @@ int main(int argc, char *argv[])
                 buffer.append(socket->readAll());
                 DynamixelProtocol::Packet request;
                 while (DynamixelProtocol::takePacket(buffer, request)) {
+                    if (request.id == broadcastId
+                        && request.code == DynamixelProtocol::syncWriteInstruction) {
+                        const QByteArray &parameters = request.parameters;
+                        if (parameters.size() == 2 + motorCount * 3
+                            && static_cast<quint8>(parameters.at(0)) == goalPositionAddress
+                            && static_cast<quint8>(parameters.at(1)) == 2) {
+                            for (int entry = 0; entry < motorCount; ++entry) {
+                                const int offset = 2 + entry * 3;
+                                const int id = static_cast<quint8>(parameters.at(offset));
+                                if (id < 1 || id > motorCount)
+                                    continue;
+                                const int index = id - 1;
+                                updateMotor(index);
+                                goals[index] = static_cast<quint8>(parameters.at(offset + 1))
+                                    | (static_cast<quint16>(static_cast<quint8>(
+                                           parameters.at(offset + 2))) << 8);
+                                goals[index] = std::clamp(goals[index], 0.0, 1023.0);
+                                goalMode[index] = true;
+                            }
+                        }
+                        continue; // Broadcast sync writes have no status packet.
+                    }
                     if (request.id == 0 || request.id > motorCount)
                         continue;
 
@@ -63,8 +109,10 @@ int main(int argc, char *argv[])
                         const quint8 length = static_cast<quint8>(
                             request.parameters.at(1));
                         if (address == presentPositionAddress && length == 2) {
-                            const quint16 position = simulatedPosition(
-                                request.id, clock.elapsed());
+                            const int index = request.id - 1;
+                            updateMotor(index);
+                            const quint16 position = static_cast<quint16>(
+                                std::lround(positions[index]));
                             responseParameters.append(char(position & 0xff));
                             responseParameters.append(char((position >> 8) & 0xff));
                             shouldRespond = true;
@@ -73,6 +121,11 @@ int main(int argc, char *argv[])
                                && request.parameters.size() == 3
                                && static_cast<quint8>(request.parameters.at(0))
                                    == movingSpeedAddress) {
+                        const int index = request.id - 1;
+                        speedRegisters[index] =
+                            static_cast<quint8>(request.parameters.at(1))
+                            | (static_cast<quint16>(static_cast<quint8>(
+                                   request.parameters.at(2))) << 8);
                         shouldRespond = true;
                     }
 

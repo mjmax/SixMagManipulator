@@ -7,11 +7,18 @@
 #include <QVector>
 
 #include <array>
+#include <cstdint>
 #include <memory>
 
 class QThread;
 class MotorWorker;
 struct MotorStateStore;
+
+struct ControlTiming {
+    double loopMilliseconds = -1.0;
+    double endToEndMilliseconds = -1.0;
+    double evaluationMilliseconds = -1.0;
+};
 
 class MotorController final : public QObject
 {
@@ -33,10 +40,17 @@ public:
     std::array<double, 6> biases() const;
     double speedLimitRpm() const;
     // Full-speed feedback: magnet angle = servo angle - bias, in degrees;
-    // index 0 corresponds to M1. Future control laws must use these unbiased
-    // angles. A future goal-position write path must add that motor's bias
-    // exactly once before converting to the AX-18A 0..1023 position value.
+    // index 0 corresponds to M1. Goal writes add each motor's bias exactly
+    // once before converting to the AX-18A 0..1023 position value.
     std::array<double, 6> latestAngles() const;
+    ControlTiming controlTiming() const;
+    std::uint64_t beginGoalControl();
+    void stopGoalControl();
+    void submitGoalAngles(std::uint64_t sessionId,
+                          const std::array<double, 6> &unbiasedRadians,
+                          double frameSubmittedAtSeconds = 0.0,
+                          double evaluationMilliseconds = 0.0);
+    bool moveToBias();
     void shutdown();
 
 public slots:
